@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RecursiveMAS P2P — two agents talking in latent space over WebRTC</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛰️</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .p2p-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .sig-box { width: 100%; min-height: 64px; font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: .72rem; resize: vertical; background: var(--bg-2, #12152a); color: var(--text, #e5e7eb);
+      border: 1px solid var(--border, #2a2f4a); border-radius: 6px; padding: .5rem; }
+    .role-prompt { width: 100%; min-height: 70px; font-size: .82rem; background: var(--bg-2, #12152a);
+      color: var(--text, #e5e7eb); border: 1px solid var(--border, #2a2f4a); border-radius: 6px; padding: .5rem; }
+    .peer-pill { display: inline-flex; gap: .4rem; align-items: center; padding: .25rem .6rem;
+      border-radius: 999px; background: rgba(99,102,241,.12); border: 1px solid var(--accent); font-size: .8rem; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+    .dot.on { background: #34d399; } .dot.wait { background: #fbbf24; }
+    .wire-msg { font-size: .72rem; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .role-select { display:flex; gap:.5rem; flex-wrap:wrap; margin:.4rem 0; }
+    @media (max-width: 720px) { .p2p-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="site-header">
+      <h1>🛰️ RecursiveMAS <span style="color:var(--accent)">P2P</span></h1>
+      <p class="muted">Two people, two agents, one shared latent space — across the internet over WebRTC.
+        Your agent's <em>hidden state</em> (not text) crosses the wire; the other agent injects it and continues.
+        <a href="index.html">← back to the single-browser demo</a></p>
+    </header>
+
+    <section class="card">
+      <p class="honest">
+        ⚠️ <strong>Both peers must run the same RecursiveMAS-0.5B model</strong> — that's what makes the 896-d
+        latent space shared (outer RecursiveLink = identity). The two agents differ only by <em>role prompt</em>
+        (e.g. Travel vs Hotel). Each peer downloads the model once (WebGPU). Latents (≈3.5&nbsp;KB vectors) are sent
+        over a WebRTC data channel; only the final hop decodes to text.
+      </p>
+    </section>
+
+    <!-- 1 · Your agent -->
+    <section class="card">
+      <div class="step-label">1 · YOUR AGENT</div>
+      <div class="role-select">
+        <label><input type="radio" name="role" value="travel" checked /> 🧳 Travel agent</label>
+        <label><input type="radio" name="role" value="hotel" /> 🏨 Hotel agent</label>
+        <label><input type="radio" name="role" value="custom" /> ✏️ Custom</label>
+      </div>
+      <input id="agent-name" class="role-prompt" style="min-height:0" value="" placeholder="Your agent name (e.g. Vishal-Travel)" />
+      <textarea id="role-prompt" class="role-prompt" spellcheck="false"></textarea>
+      <div class="run-row" style="margin-top:.6rem">
+        <button id="load-btn" class="btn-secondary">⤓ Load RecursiveMAS-0.5B</button>
+        <span id="model-status" class="status-badge status-idle">idle</span>
+      </div>
+      <div id="model-hint" class="muted" style="font-size:.78rem;margin-top:.4rem"></div>
+    </section>
+
+    <!-- 2 · Connect -->
+    <section class="card">
+      <div class="step-label">2 · CONNECT (no server — copy/paste codes)</div>
+      <div class="p2p-grid">
+        <div>
+          <p class="muted"><strong>Host</strong> — start here, share the invite code with your friend.</p>
+          <button id="create-invite-btn" class="btn-secondary">① Create invite code</button>
+          <textarea id="offer-out" class="sig-box" readonly placeholder="invite code appears here → send it to your friend"></textarea>
+          <p class="muted" style="font-size:.75rem">Then paste your friend's <em>answer code</em> below:</p>
+          <textarea id="answer-in" class="sig-box" placeholder="paste friend's answer code"></textarea>
+          <button id="accept-answer-btn" class="btn-secondary">③ Connect</button>
+        </div>
+        <div>
+          <p class="muted"><strong>Joiner</strong> — paste the host's invite code, send back your answer.</p>
+          <textarea id="offer-in" class="sig-box" placeholder="paste host's invite code"></textarea>
+          <button id="join-btn" class="btn-secondary">② Join &amp; make answer</button>
+          <textarea id="answer-out" class="sig-box" readonly placeholder="your answer code appears here → send it back to the host"></textarea>
+        </div>
+      </div>
+      <div id="peers" style="margin-top:.8rem"></div>
+    </section>
+
+    <!-- 3 · Run (host) -->
+    <section class="card">
+      <div class="step-label">3 · COLLABORATE IN LATENT SPACE (host drives)</div>
+      <textarea id="task" class="role-prompt" spellcheck="false" placeholder="Task for the team, e.g. Plan a 3-day Tokyo trip with a hotel near Shibuya">Plan a 3-day Tokyo trip with a hotel near Shibuya.</textarea>
+      <div class="run-row" style="margin-top:.6rem; align-items:center">
+        <label class="muted">Latent rounds:
+          <select id="rounds"><option>1</option><option selected>2</option><option>3</option></select>
+        </label>
+        <button id="run-btn" class="btn-primary" disabled>▶ Run latent collaboration</button>
+      </div>
+      <p class="muted" style="font-size:.75rem">Enabled once both peers are connected and have loaded the model.</p>
+    </section>
+
+    <!-- Transcript -->
+    <section class="card">
+      <div class="step-label">LATENT TRANSCRIPT</div>
+      <div id="transcript" class="transcript-body" style="display:flex;flex-direction:column;gap:.5rem"></div>
+    </section>
+
+    <footer class="site-footer">
+      <p class="muted">RecursiveMAS P2P · WebLLM + WebGPU + WebRTC · no servers</p>
+    </footer>
+  </div>
+  <script type="module" src="p2p.js"></script>
+</body>
+</html>

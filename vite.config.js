@@ -12,6 +12,10 @@ export default defineConfig({
     assetsDir: 'assets',
     target: 'esnext',
     sourcemap: false,
+    // Multi-page: the single-browser demo (index) + the WebRTC P2P latent demo (p2p).
+    rollupOptions: {
+      input: { main: 'index.html', p2p: 'p2p.html' },
+    },
   },
   server: {
     port: 3001,
