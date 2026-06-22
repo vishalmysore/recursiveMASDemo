@@ -772,8 +772,9 @@ function renderCustomModelCards() {
   if (!wrap || !CUSTOM_MODELS.length) return;
   CUSTOM_MODELS.forEach(c => {
     const label = el('label', 'model-card');
+    const isChecked = c.model_id === 'recursivemas-0.5b' ? 'checked' : '';
     label.innerHTML =
-      `<input type="radio" name="model" value="${esc(c.model_id)}" />` +
+      `<input type="radio" name="model" value="${esc(c.model_id)}" ${isChecked} />` +
       `<div class="model-card-inner">` +
       `<div class="model-name">${esc(c.label || c.model_id)}${c.exposesLatent ? ' <span class="tag tag-latent">latent</span>' : ''}</div>` +
       `<div class="model-meta">${esc(c.size || 'custom')}</div></div>`;
