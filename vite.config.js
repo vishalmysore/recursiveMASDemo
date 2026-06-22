@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   // Change this to match your GitHub Pages repo name (e.g. '/recursiveMAS/').
   // Use '/' if deploying to a root user/org site.
-  base: '/recursiveMAS/',
+  base: '/recursiveMASDemo/',
   optimizeDeps: {
     exclude: ['@mlc-ai/web-llm'],
   },
