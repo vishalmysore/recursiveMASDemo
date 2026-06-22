@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+# the source PDF / extracted text of the paper (kept out of the deployed site)
+paper.txt
