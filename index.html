@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RecursiveMAS Playground — Recursive Multi-Agent Systems in the browser</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♻️</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">♻️ RecursiveMAS Playground</div>
+    <div class="subtitle">Recursive multi-agent collaboration with local LLMs — no servers, no API keys, pure WebGPU.</div>
+  </header>
+
+  <main>
+
+    <!-- ══ INTRO ════════════════════════════════════════════════════════════ -->
+    <section class="card intro">
+      <p>
+        Based on the paper <a href="https://recursivemas.github.io" target="_blank" rel="noopener"><strong>“Recursive Multi-Agent Systems”</strong></a>.
+        A whole multi-agent system is treated as one <strong>recursive computation loop</strong>: agents are
+        chained <code>A₁ → A₂ → … → Aₙ → back to A₁</code> and re-run for several <em>recursion rounds</em>.
+        Intermediate rounds stay compact (“latent”); <strong>only the last agent in the last round decodes the full text answer</strong>.
+        The payoff vs. ordinary text-passing multi-agent systems: higher accuracy, fewer tokens, faster.
+      </p>
+      <p class="honest">
+        ⚠️ <strong>Honest note.</strong> Browser LLMs (WebLLM) don't expose model hidden states, so true
+        latent-vector transfer and RecursiveLink <em>training</em> can't run client-side. This demo runs
+        <strong>real local models</strong> and faithfully reproduces the <em>system behavior</em>: the recursive loop,
+        the round structure, and the efficiency mechanism — intermediate agents emit a tiny <em>latent thought</em>
+        instead of full prose, so only the final agent fully decodes. Run it against the text-passing baseline below
+        and watch the paper's tokens/time gap appear live.
+      </p>
+    </section>
+
+    <!-- ══ CONFIGURE ════════════════════════════════════════════════════════ -->
+    <section class="card">
+      <div class="step-label">1 · CHOOSE A COLLABORATION PATTERN</div>
+      <p class="muted">The paper instantiates RecursiveMAS under four agent-collaboration patterns. Pick one.</p>
+      <div class="pattern-cards" id="pattern-cards">
+        <label class="pattern-card">
+          <input type="radio" name="pattern" value="sequential" checked />
+          <div class="pattern-card-inner">
+            <div class="pattern-emoji">🔗</div>
+            <div class="pattern-name">Sequential</div>
+            <div class="pattern-flow">Planner → Critic → Solver</div>
+          </div>
+        </label>
+        <label class="pattern-card">
+          <input type="radio" name="pattern" value="mixture" />
+          <div class="pattern-card-inner">
+            <div class="pattern-emoji">🧩</div>
+            <div class="pattern-name">Mixture</div>
+            <div class="pattern-flow">Math · Code · Science → Summarizer</div>
+          </div>
+        </label>
+        <label class="pattern-card">
+          <input type="radio" name="pattern" value="distillation" />
+          <div class="pattern-card-inner">
+            <div class="pattern-emoji">🎓</div>
+            <div class="pattern-name">Distillation</div>
+            <div class="pattern-flow">Expert → Learner</div>
+          </div>
+        </label>
+        <label class="pattern-card">
+          <input type="radio" name="pattern" value="deliberation" />
+          <div class="pattern-card-inner">
+            <div class="pattern-emoji">🛠️</div>
+            <div class="pattern-name">Deliberation</div>
+            <div class="pattern-flow">Reflector ↔ Tool-Caller</div>
+          </div>
+        </label>
+      </div>
+      <p class="pattern-desc" id="pattern-desc"></p>
+    </section>
+
+    <section class="card">
+      <div class="setup-grid">
+        <div class="setup-col">
+          <div class="step-label">2 · AGENT BACKBONE MODEL</div>
+          <p class="muted">One local model powers every role (each gets its own role prompt). The paper assigns a
+            <em>different</em> model per role — shown on each agent node below.</p>
+          <div class="model-cards" id="model-cards">
+            <label class="model-card"><input type="radio" name="model" value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC" checked /><div class="model-card-inner"><div class="model-name">Qwen 2.5 · 1.5B</div><div class="model-meta">~1 GB · Recommended</div></div></label>
+            <label class="model-card"><input type="radio" name="model" value="Llama-3.2-1B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Llama 3.2 · 1B</div><div class="model-meta">~800 MB · Fastest</div></div></label>
+            <label class="model-card"><input type="radio" name="model" value="Llama-3.2-3B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Llama 3.2 · 3B</div><div class="model-meta">~2 GB · Balanced</div></div></label>
+            <label class="model-card"><input type="radio" name="model" value="gemma-2-2b-it-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Gemma 2 · 2B</div><div class="model-meta">~1.5 GB · Google</div></div></label>
+            <label class="model-card"><input type="radio" name="model" value="Phi-3.5-mini-instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Phi-3.5 Mini</div><div class="model-meta">~2.2 GB · Smart</div></div></label>
+            <label class="model-card"><input type="radio" name="model" value="Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Qwen2.5 Coder · 1.5B</div><div class="model-meta">~1 GB · Code</div></div></label>
+          </div>
+        </div>
+
+        <div class="setup-col">
+          <div class="step-label">3 · RECURSION ROUNDS &nbsp;<span class="rounds-val" id="rounds-val">2</span></div>
+          <p class="muted">How many times the whole agent loop repeats. The paper shows accuracy &amp; efficiency
+            gains grow with depth (its “scaling law”).</p>
+          <input type="range" id="rounds-slider" class="rounds-slider" min="1" max="4" step="1" value="2" />
+          <div class="rounds-scale"><span>1</span><span>2</span><span>3</span><span>4</span></div>
+
+          <div class="step-label" style="margin-top:1.25rem">4 · TASK</div>
+          <div class="task-chips" id="task-chips"></div>
+          <textarea id="task-input" class="task-input" rows="3"
+            placeholder="Type a question for the agent team to solve…"></textarea>
+        </div>
+      </div>
+
+      <label class="bus-opt">
+        <input type="checkbox" id="bus-toggle" />
+        <span>🧲 <strong>Embedding memory bus</strong> — agents route state through a real on-device
+          embedding model (<code>snowflake-arctic-embed-s</code>) + a shared vector store, retrieving
+          relevant prior latents by cosine similarity instead of passing prose down the chain.
+          The embeddings genuinely flow between agents; the retrieved text is what enters the LLM.
+          <em>Adds a second small model to the load.</em></span>
+      </label>
+
+      <div class="run-row">
+        <button id="run-latent-btn" class="btn-primary">▶ Run RecursiveMAS <span class="tag tag-latent">latent</span></button>
+        <button id="run-text-btn" class="btn-secondary">▶ Run Text-MAS <span class="tag tag-text">baseline</span></button>
+        <button id="run-both-btn" class="btn-secondary">⚖ Run Both &amp; Compare</button>
+        <button id="stop-btn" class="btn-ghost" style="display:none">■ Stop</button>
+      </div>
+    </section>
+
+    <!-- ══ MODEL LOAD ═══════════════════════════════════════════════════════ -->
+    <section class="card">
+      <div class="model-row">
+        <span id="model-status-text">Model loads on first run — cached in your browser afterwards.</span>
+        <span id="model-badge" class="status-badge status-idle">idle</span>
+      </div>
+      <div class="progress-bar-wrap" id="progress-wrap" style="display:none">
+        <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+      </div>
+      <p class="muted" id="model-hint">Needs a WebGPU browser (Chrome/Edge 113+). Discrete GPU recommended for 3B+.</p>
+    </section>
+
+    <!-- ══ LOOP VISUALIZATION ═══════════════════════════════════════════════ -->
+    <section class="card">
+      <div class="viz-header">
+        <div class="step-label" style="margin-bottom:0">THE RECURSIVE LOOP</div>
+        <div class="viz-round" id="viz-round">round —</div>
+      </div>
+      <div class="loop-viz" id="loop-viz">
+        <p class="muted" style="margin:0">Pick a pattern and press Run — the agent loop animates here as it executes.</p>
+      </div>
+      <div class="viz-legend">
+        <span><span class="legend-dot inner"></span> inner link (refines own latent thoughts)</span>
+        <span><span class="legend-dot outer"></span> outer link (transfers latent state to next agent)</span>
+        <span><span class="legend-dot decode"></span> final decode → text</span>
+      </div>
+    </section>
+
+    <!-- ══ EMBEDDING MEMORY BUS ═════════════════════════════════════════════ -->
+    <section class="card" id="bus-card" style="display:none">
+      <div class="viz-header">
+        <div class="step-label" style="margin-bottom:0">🧲 LATENT MEMORY BUS — shared vector store</div>
+        <div class="viz-round" id="bus-dim"></div>
+      </div>
+      <p class="muted" style="margin:0 0 0.6rem">
+        Each agent embeds its latent thought (real <code>snowflake-arctic-embed-s</code> vectors) and
+        writes it here; the next agent retrieves the most similar entries by cosine similarity. This is
+        the “outer link as retrieval” analogue — state flows between agents as embeddings, not prose.
+      </p>
+      <div class="bus-list" id="bus-list"></div>
+    </section>
+
+    <!-- ══ METRICS ══════════════════════════════════════════════════════════ -->
+    <section class="card" id="metrics-card" style="display:none">
+      <div class="step-label">RESULTS — RecursiveMAS vs. Text-MAS</div>
+      <p class="muted">Reproduces the paper's headline comparison (its Table 2) on your own run.</p>
+      <div class="metrics-grid" id="metrics-grid"></div>
+      <div class="metrics-delta" id="metrics-delta"></div>
+    </section>
+
+    <!-- ══ TRANSCRIPT ═══════════════════════════════════════════════════════ -->
+    <section class="card" id="transcript-card" style="display:none">
+      <div class="transcript-tabs" id="transcript-tabs">
+        <button class="ttab active" data-tab="latent">RecursiveMAS</button>
+        <button class="ttab" data-tab="text">Text-MAS</button>
+      </div>
+      <div class="transcript" id="transcript-latent"></div>
+      <div class="transcript" id="transcript-text" style="display:none"></div>
+    </section>
+
+    <!-- ══ HOW IT WORKS ═════════════════════════════════════════════════════ -->
+    <section class="card explainer">
+      <div class="step-label">HOW RECURSIVEMAS WORKS</div>
+
+      <h3>The RecursiveLink</h3>
+      <p class="muted">A lightweight two-layer residual module is the only thing that's trained — the agents themselves stay frozen.</p>
+      <div class="formula-row">
+        <div class="formula-card">
+          <div class="formula-title"><span class="legend-dot inner"></span> Inner link <em>(within one agent)</em></div>
+          <div class="formula">R<sub>in</sub>(h) = h + W₂·GELU(W₁·h)</div>
+          <p class="muted">Feeds an agent's last-layer latent thought back as its own next-step input — deepening reasoning without decoding to text.</p>
+        </div>
+        <div class="formula-card">
+          <div class="formula-title"><span class="legend-dot outer"></span> Outer link <em>(across agents)</em></div>
+          <div class="formula">R<sub>out</sub>(h) = W₃·h + W₂·GELU(W₁·h)</div>
+          <p class="muted">Projects one model's latent state into the next (heterogeneous) model's embedding space — the bridge that lets different model families collaborate.</p>
+        </div>
+      </div>
+
+      <h3>The two-stage training (in the paper)</h3>
+      <ul class="muted">
+        <li><strong>Inner loop</strong> — warm-starts each agent's inner link with a cosine-similarity objective so its latent thoughts align with the input-embedding space.</li>
+        <li><strong>Outer loop</strong> — unrolls the whole system over recursion rounds and back-propagates one shared cross-entropy signal through every outer link, co-optimizing the system as a single entity.</li>
+      </ul>
+
+      <h3>Why latent, not text?</h3>
+      <ul class="muted">
+        <li><strong>Efficiency</strong> — intermediate agents skip expensive vocabulary-space decoding, replacing it with a cheap latent transform (1.2–2.4× faster, 34.6–75.6% fewer tokens).</li>
+        <li><strong>Stable gradients</strong> — latent connections avoid the gradient-vanishing that text-mediated recursion suffers from when tokens are confident.</li>
+      </ul>
+
+      <h3>Reported results</h3>
+      <p class="muted">Across 9 benchmarks (math, science, medicine, search, code) and 4 patterns: average <strong>+8.3% accuracy</strong>, <strong>1.2–2.4× speedup</strong>, <strong>34.6–75.6% fewer tokens</strong> vs. text-based recursive MAS — with gains widening as recursion depth increases.</p>
+
+      <h3>🧲 The embedding bus, and what a browser can't do</h3>
+      <p class="muted">A faithful latent transfer needs to read a model's last-layer hidden states and feed a vector back in as <code>inputs_embeds</code>. A capability check confirmed that off-the-shelf browser runtimes (WebLLM <em>and</em> transformers.js) expose only <code>input_ids → logits</code> — neither hidden-state output nor embedding input. So this demo offers two pure-browser stand-ins: the default passes a compact <em>text</em> latent thought; the optional <strong>embedding memory bus</strong> passes <em>real</em> 384-dim vectors and routes between agents by cosine similarity (the closest analogue of the outer link). In both, the receiving LLM ultimately ingests text — that last step is the browser's hard limit.</p>
+    </section>
+
+    <footer class="site-footer">
+      <p class="muted">
+        Demo built in the style of <a href="https://vishalmysore.github.io/agentHerd/" target="_blank" rel="noopener">AgentHerd</a> ·
+        WebLLM + WebGPU · runs entirely on your device.
+        Concepts from <a href="https://recursivemas.github.io" target="_blank" rel="noopener">RecursiveMAS</a> (Yang, Zou, et al.).
+      </p>
+    </footer>
+
+  </main>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
