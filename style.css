@@ -95,10 +95,17 @@ code {
 /* ── Pattern cards ── */
 .pattern-cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 0.7rem;
 }
 .pattern-card { cursor: pointer; }
+/* The P2P entry is a link, not a selectable pattern — tint it so it reads as a door out. */
+.pattern-card-link { text-decoration: none; }
+.pattern-card-link .pattern-card-inner {
+  border-style: dashed;
+  background: linear-gradient(160deg, rgba(45,212,191,0.10), rgba(99,102,241,0.06));
+}
+.pattern-card-link:hover .pattern-card-inner { border-color: var(--accent); border-style: solid; }
 .pattern-card input { display: none; }
 .pattern-card-inner {
   background: var(--surface2);

@@ -11,7 +11,6 @@
   <header>
     <div class="logo">♻️ RecursiveMAS Playground</div>
     <div class="subtitle">Recursive multi-agent collaboration with local LLMs — no servers, no API keys, pure WebGPU.</div>
-    <div class="subtitle" style="margin-top:.4rem">🛰️ New: <a href="p2p.html"><strong>RecursiveMAS P2P</strong></a> — invite a friend over WebRTC and let your two agents collaborate in shared latent space.</div>
   </header>
 
   <main>
@@ -40,7 +39,8 @@
     <!-- ══ CONFIGURE ════════════════════════════════════════════════════════ -->
     <section class="card">
       <div class="step-label">1 · CHOOSE A COLLABORATION PATTERN</div>
-      <p class="muted">The paper instantiates RecursiveMAS under four agent-collaboration patterns. Pick one.</p>
+      <p class="muted">The paper instantiates RecursiveMAS under four agent-collaboration patterns — pick one to run locally.
+        Or open <strong>Multi-Agent</strong> to collaborate with a friend's agent across two browsers over WebRTC.</p>
       <div class="pattern-cards" id="pattern-cards">
         <label class="pattern-card">
           <input type="radio" name="pattern" value="sequential" checked />
@@ -74,6 +74,13 @@
             <div class="pattern-flow">Reflector ↔ Tool-Caller</div>
           </div>
         </label>
+        <a class="pattern-card pattern-card-link" href="p2p.html">
+          <div class="pattern-card-inner">
+            <div class="pattern-emoji">🛰️</div>
+            <div class="pattern-name">Multi-Agent</div>
+            <div class="pattern-flow">Your agent ↔ a friend's, over WebRTC →</div>
+          </div>
+        </a>
       </div>
       <p class="pattern-desc" id="pattern-desc"></p>
     </section>
