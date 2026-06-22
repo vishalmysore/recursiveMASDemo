@@ -1,6 +1,7 @@
 import * as webllm from '@mlc-ai/web-llm';
 import { loadRecursiveLinks } from './recursive-link.js';
 import { getLatentRuntime, latentForward, cosine } from './latent-core.js';
+import { chainForward, chainDecode } from './latent-chain.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    RecursiveMAS Playground
@@ -185,6 +186,7 @@ const results     = { latent: null, text: null }; // {finalText, totals, transcr
 // Real latent-space runtime: invokes the custom model's get_last_hidden on-device.
 let latentRT      = null;    // { ok, ... } resolved after the model loads (latent-core.js)
 let prevLatentVec = null;    // previous agent's pooled latent — for latent-space routing cosine
+let chainEnabled  = false;   // true vector-only transfer (intermediates never decode text)
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 const $  = (id) => document.getElementById(id);
@@ -460,6 +462,16 @@ async function runMode(mode, task, pattern, rounds, tx) {
   let finalText = '';
   if (mode === 'latent') prevLatentVec = null;  // reset latent-space routing chain
 
+  // True vector-only transfer: intermediates never decode text. Linear patterns only
+  // (tool hops + the mixture aggregator need text), and requires the latent runtime.
+  const canChain = mode === 'latent' && chainEnabled && latentRT?.ok && P.flow !== 'mixture' && !P.tools;
+  if (mode === 'latent' && chainEnabled && !canChain) {
+    addChainNote(tx, latentRT?.ok
+      ? `latent-only transfer skips “${P.label}” (needs text for tools/aggregation) — running classic latent`
+      : `latent-only unavailable (${latentRT?.reason || 'no runtime'}) — running classic latent`);
+  }
+  if (canChain) return runLatentChain(task, P, rounds, tx);
+
   // The embedding bus only applies to the RecursiveMAS (latent) run, not the text baseline.
   const useBus = busEnabled && mode === 'latent';
 
@@ -474,6 +486,73 @@ async function runMode(mode, task, pattern, rounds, tx) {
       ({ carry, finalText } = await runMixtureRound(mode, task, P, r, rounds, carry, isFinalRound, totals, tx));
     } else {
       ({ carry, finalText } = await runLinearRound(mode, task, P, r, rounds, carry, isFinalRound, totals, tx));
+    }
+    if (r < rounds) { loopViz.querySelector('.feedback-arrow')?.classList.add('active'); await sleep(450); loopViz.querySelector('.feedback-arrow')?.classList.remove('active'); }
+  }
+  return { finalText, totals, transcript: tx };
+}
+
+// ── True vector-only RecursiveMAS (latent-chain.js) ──────────────────────────────
+// Intermediate agents forward through get_last_hidden over the previous agent's
+// injected latent and emit a hidden vector (never text). The accumulated latent loops
+// back to the first agent each round; only the final agent in the final round decodes.
+// Falls back to the classic latent run if any low-level step fails.
+async function runLatentChain(task, P, rounds, tx) {
+  const totals = { tokens: 0, time: 0, calls: 0 };
+  const agents = P.agents;
+  let latent = null;      // pooled latent vector carried between agents / rounds
+  let finalText = '';
+  prevLatentVec = null;
+
+  for (let r = 1; r <= rounds && !cancelled; r++) {
+    vizRound.textContent = `round ${r} / ${rounds}`;
+    addRoundDivider(tx, r, rounds);
+    const isFinalRound = r === rounds;
+
+    for (let i = 0; i < agents.length && !cancelled; i++) {
+      const a = agents[i];
+      const isLastAgent = i === agents.length - 1;
+      const decode = isFinalRound && isLastAgent;
+      const prompt = `${a.prompt}\n\n${buildUser(task, null, r, rounds, latent ? 'the previous agent (latent)' : null)}`;
+
+      vizSetActive(a.key, { decode, state: decode ? 'decoding ← latent' : 'latent (get_last_hidden)' });
+      await sleep(120);
+
+      const t0 = performance.now();
+      if (decode) {
+        const msg = addMsg(tx, a.emoji, a.role, 'decode', '', 'decode');
+        const body = msg.querySelector('.msg-body');
+        const res = await chainDecode(latentRT, prompt, latent, {
+          maxTokens: MAXTOK_DECODE, temperature: TEMP,
+          onToken: (d) => { body.textContent += d; body.scrollIntoView({ block: 'nearest' }); },
+          isStopped: () => cancelled,
+        });
+        if (!res.ok) {
+          addChainNote(tx, `decode failed at ${res.stage}: ${res.error} — falling back to classic latent decode`);
+          const out = await generate({ system: a.prompt, user: buildUser(task, null, r, rounds, null) + modeTail('latent', true), maxTokens: MAXTOK_DECODE, stream: true, onToken: (d) => { body.textContent += d; } });
+          finalText = out.text; totals.tokens += out.tokens; totals.time += out.time;
+        } else {
+          if (!body.textContent) body.textContent = res.text || '(no output)';
+          finalText = res.text;
+          totals.tokens += res.nTokens;
+          addChainProof(msg, { decoded: true, injected: res.injected, nTokens: res.nTokens });
+        }
+        totals.time += performance.now() - t0;
+        totals.calls += 1;
+      } else {
+        const msg = addMsg(tx, a.emoji, a.role, 'latent', '⟶ latent only (no text decode)', 'latent');
+        const res = await chainForward(latentRT, prompt, latent);
+        totals.time += performance.now() - t0;
+        totals.calls += 1;
+        if (!res.ok) {
+          addChainNote(tx, `${a.role} latent forward failed at ${res.stage}: ${res.error} — aborting latent-only run`);
+          return { finalText, totals, transcript: tx, aborted: true };
+        }
+        const c = res.pooled && prevLatentVec ? cosine(prevLatentVec, res.pooled) : null;
+        if (res.pooled) { latent = res.pooled; prevLatentVec = res.pooled; }
+        addChainProof(msg, { shape: res.shape, dtype: res.dtype, norm: res.norm, injected: res.injected, cos: c });
+        msg.querySelector('.msg-meta').textContent = `${(((performance.now() - t0)) / 1000).toFixed(1)}s · no decode`;
+      }
     }
     if (r < rounds) { loopViz.querySelector('.feedback-arrow')?.classList.add('active'); await sleep(450); loopViz.querySelector('.feedback-arrow')?.classList.remove('active'); }
   }
@@ -686,6 +765,28 @@ function addRetrievalNote(tx, a, hits) {
   tx.appendChild(m);
 }
 
+// Inline note for the latent-only run (skips, fallbacks, aborts).
+function addChainNote(tx, text) {
+  tx.appendChild(el('div', 'latent-proof', `🧬 <span class="lp-warn">${esc(text)}</span>`));
+}
+
+// Proof line for a latent-only step: the real hidden tensor / decode, injection, routing.
+function addChainProof(msg, info) {
+  const parts = [];
+  if (info.decoded) {
+    parts.push('<span class="lp-ok">decoded ← injected latent</span>');
+    if (info.injected === false) parts.push('(latent injection skipped)');
+    if (info.nTokens != null) parts.push(`${info.nTokens} tok`);
+  } else {
+    parts.push('<span class="lp-ok">get_last_hidden</span>');
+    if (info.shape) parts.push(`→ [${info.shape.join('×')}] ${esc(info.dtype || '')}`);
+    parts.push(info.injected ? 'latent injected (R_out=I)' : 'no prefix (first hop)');
+    if (info.norm != null) parts.push(`‖h‖=${info.norm.toFixed(2)}`);
+    if (info.cos != null) parts.push(`cos(prev)=${info.cos.toFixed(3)}`);
+  }
+  msg.appendChild(el('div', 'latent-proof', `🧬 ${parts.join(' · ')}`));
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // Embedding memory bus visualization
 // ════════════════════════════════════════════════════════════════════════════
@@ -765,6 +866,7 @@ async function run(modes) {
 
   cancelled = false;
   busEnabled = !!busToggle?.checked;
+  chainEnabled = !!$('chain-toggle')?.checked;
   setRunning(true);
   setModelStatus(busEnabled ? 'Preparing (chat + embedder)…' : 'Preparing…', 'loading');
 
@@ -812,11 +914,21 @@ runTextBtn.onclick   = () => { results.latent = null; run(['text']); };
 runBothBtn.onclick   = () => { run(['text', 'latent']); };  // baseline first, then RecursiveMAS
 stopBtn.onclick      = () => { cancelled = true; setModelStatus('Stopping…', 'loading'); };
 
+const chainToggle = $('chain-toggle');
+function refreshLatentBtnLabel() {
+  const tag = chainEnabled ? '🧬 latent-only' : busEnabled ? '🧲 bus' : 'latent';
+  runLatentBtn.innerHTML = `▶ Run RecursiveMAS <span class="tag tag-latent">${tag}</span>`;
+}
 busToggle?.addEventListener('change', () => {
   busEnabled = busToggle.checked;
-  runLatentBtn.innerHTML = busEnabled
-    ? '▶ Run RecursiveMAS <span class="tag tag-latent">🧲 bus</span>'
-    : '▶ Run RecursiveMAS <span class="tag tag-latent">latent</span>';
+  // The embedding bus and vector-only transfer are mutually exclusive routing schemes.
+  if (busEnabled && chainEnabled && chainToggle) { chainToggle.checked = false; chainEnabled = false; }
+  refreshLatentBtnLabel();
+});
+chainToggle?.addEventListener('change', () => {
+  chainEnabled = chainToggle.checked;
+  if (chainEnabled && busEnabled && busToggle) { busToggle.checked = false; busEnabled = false; }
+  refreshLatentBtnLabel();
 });
 
 document.querySelectorAll('.ttab').forEach(t => t.onclick = () => showTranscriptTab(t.dataset.tab));

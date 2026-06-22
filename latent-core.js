@@ -33,7 +33,14 @@ export function getLatentRuntime(engine, modelId) {
     if (typeof pipeline.embedAndForward !== 'function' || typeof pipeline.resetChat !== 'function') {
       return { ok: false, reason: 'incompatible web-llm version (no embedAndForward/resetChat)' };
     }
-    return { ok: true, pipeline, vm, tvm: pipeline.tvm, fGLH, fDLH };
+    // Capture the REAL forward handles up-front (latentForward swaps pipeline.prefill
+    // temporarily; the latent-chain decode loop needs the genuine LM-head prefill/decode).
+    return {
+      ok: true, pipeline, vm, tvm: pipeline.tvm, fGLH, fDLH,
+      realPrefill: pipeline.prefill,
+      realDecode:  pipeline.decoding,
+      stopTokens:  Array.isArray(pipeline.stopTokens) ? pipeline.stopTokens.slice() : [],
+    };
   } catch (e) {
     return { ok: false, reason: e?.message || String(e) };
   }

@@ -112,6 +112,15 @@
           <em>Adds a second small model to the load.</em></span>
       </label>
 
+      <label class="bus-opt">
+        <input type="checkbox" id="chain-toggle" />
+        <span>🧬 <strong>Latent-only transfer</strong> — the paper's true mechanism: intermediate agents
+          <strong>never decode text</strong>. Each forwards through <code>get_last_hidden</code> over the
+          previous agent's injected latent (outer RecursiveLink) and passes a hidden vector onward; only the
+          final agent decodes to text. Requires the custom latent model; applies to the linear patterns
+          (Sequential, Distillation). <em>Experimental — uses low-level WebLLM internals.</em></span>
+      </label>
+
       <div class="run-row">
         <button id="run-latent-btn" class="btn-primary">▶ Run RecursiveMAS <span class="tag tag-latent">latent</span></button>
         <button id="run-text-btn" class="btn-secondary">▶ Run Text-MAS <span class="tag tag-text">baseline</span></button>
