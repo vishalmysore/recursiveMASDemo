@@ -489,6 +489,20 @@ code {
 .site-footer { text-align: center; padding: 1rem 0 2rem; }
 .site-footer a { color: var(--accent); }
 
+/* ── Real latent-state proof line (get_last_hidden output) ── */
+.latent-proof {
+  margin-top: .4rem; padding: .3rem .55rem;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .72rem; line-height: 1.35;
+  color: var(--muted);
+  background: rgba(99, 102, 241, .08);
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  word-break: break-word;
+}
+.latent-proof .lp-ok   { color: var(--accent); font-weight: 600; }
+.latent-proof .lp-warn { color: var(--error, #f87171); font-weight: 600; }
+
 /* ── Responsive ── */
 @media (max-width: 720px) {
   .pattern-cards { grid-template-columns: 1fr 1fr; }

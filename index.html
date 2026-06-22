@@ -25,12 +25,14 @@
         The payoff vs. ordinary text-passing multi-agent systems: higher accuracy, fewer tokens, faster.
       </p>
       <p class="honest">
-        ⚠️ <strong>Honest note.</strong> Browser LLMs (WebLLM) don't expose model hidden states, so true
-        latent-vector transfer and RecursiveLink <em>training</em> can't run client-side. This demo runs
-        <strong>real local models</strong> and faithfully reproduces the <em>system behavior</em>: the recursive loop,
-        the round structure, and the efficiency mechanism — intermediate agents emit a tiny <em>latent thought</em>
-        instead of full prose, so only the final agent fully decodes. Run it against the text-passing baseline below
-        and watch the paper's tokens/time gap appear live.
+        ⚠️ <strong>Honest note.</strong> Stock browser LLMs only expose <code>input_ids → logits</code>. This demo
+        instead runs a <strong>custom-compiled RecursiveMAS-0.5B</strong> whose graph adds <code>get_last_hidden</code>,
+        so every intermediate agent computes a <em>real</em> last-layer hidden state (the paper's latent thought)
+        on-device — each step prints its <code>[1×seq×896]</code> tensor + the latent-space routing cosine as proof.
+        The recursive loop, round structure, and efficiency mechanism all match the paper; only the final agent
+        decodes text. <strong>Remaining gap:</strong> the next agent is still conditioned on the short text thought —
+        full vector-only conditioning (and trained RecursiveLink weights) is the next step. Run it against the
+        text-passing baseline and watch the tokens/time gap appear live.
       </p>
     </section>
 
@@ -79,15 +81,11 @@
       <div class="setup-grid">
         <div class="setup-col">
           <div class="step-label">2 · AGENT BACKBONE MODEL</div>
-          <p class="muted">One local model powers every role (each gets its own role prompt). The paper assigns a
-            <em>different</em> model per role — shown on each agent node below.</p>
+          <p class="muted">This demo runs only the custom <strong>RecursiveMAS-0.5B</strong> backbone — the
+            self-compiled model whose graph exposes <code>get_last_hidden</code>, so agents exchange a
+            <em>real</em> last-layer hidden state (latent), not just compressed text.</p>
           <div class="model-cards" id="model-cards">
-            <label class="model-card"><input type="radio" name="model" value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Qwen 2.5 · 1.5B</div><div class="model-meta">~1 GB · Recommended</div></div></label>
-            <label class="model-card"><input type="radio" name="model" value="Llama-3.2-1B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Llama 3.2 · 1B</div><div class="model-meta">~800 MB · Fastest</div></div></label>
-            <label class="model-card"><input type="radio" name="model" value="Llama-3.2-3B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Llama 3.2 · 3B</div><div class="model-meta">~2 GB · Balanced</div></div></label>
-            <label class="model-card"><input type="radio" name="model" value="gemma-2-2b-it-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Gemma 2 · 2B</div><div class="model-meta">~1.5 GB · Google</div></div></label>
-            <label class="model-card"><input type="radio" name="model" value="Phi-3.5-mini-instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Phi-3.5 Mini</div><div class="model-meta">~2.2 GB · Smart</div></div></label>
-            <label class="model-card"><input type="radio" name="model" value="Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC" /><div class="model-card-inner"><div class="model-name">Qwen2.5 Coder · 1.5B</div><div class="model-meta">~1 GB · Code</div></div></label>
+            <!-- The single RecursiveMAS-0.5B card is injected by renderCustomModelCards() in main.js. -->
           </div>
         </div>
 

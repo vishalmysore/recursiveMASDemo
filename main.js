@@ -1,5 +1,6 @@
 import * as webllm from '@mlc-ai/web-llm';
 import { loadRecursiveLinks } from './recursive-link.js';
+import { getLatentRuntime, latentForward, cosine } from './latent-core.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
    RecursiveMAS Playground
@@ -22,14 +23,9 @@ import { loadRecursiveLinks } from './recursive-link.js';
    ════════════════════════════════════════════════════════════════════════════ */
 
 // ── Models ───────────────────────────────────────────────────────────────────
-const MODELS = [
-  { id: 'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',       label: 'Qwen 2.5 · 1.5B' },
-  { id: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',       label: 'Llama 3.2 · 1B'  },
-  { id: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',       label: 'Llama 3.2 · 3B'  },
-  { id: 'gemma-2-2b-it-q4f16_1-MLC',               label: 'Gemma 2 · 2B'    },
-  { id: 'Phi-3.5-mini-instruct-q4f16_1-MLC',       label: 'Phi-3.5 Mini'    },
-  { id: 'Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC', label: 'Qwen2.5 Coder'   },
-];
+// Only the custom latent-exposing backbone is offered. The RecursiveMAS-0.5B record
+// is appended below (from CUSTOM_MODELS) and becomes the sole, default-selected option.
+const MODELS = [];
 
 // ── Custom (self-compiled) models ────────────────────────────────────────────
 // Drop a record here once the model builder repo has published a model — i.e. one
@@ -185,6 +181,10 @@ let cancelled     = false;
 let busEnabled    = false;   // embedding memory bus toggle
 let latentMemory  = [];      // [{id, round, role, emoji, text, vector}]
 const results     = { latent: null, text: null }; // {finalText, totals, transcript}
+
+// Real latent-space runtime: invokes the custom model's get_last_hidden on-device.
+let latentRT      = null;    // { ok, ... } resolved after the model loads (latent-core.js)
+let prevLatentVec = null;    // previous agent's pooled latent — for latent-space routing cosine
 
 // ── DOM helpers ───────────────────────────────────────────────────────────────
 const $  = (id) => document.getElementById(id);
@@ -349,8 +349,16 @@ async function ensureModel() {
   });
   chatModelId = wanted;
   loadedSig = sig;
+
+  // Resolve the real latent runtime for latent-capable backbones (get_last_hidden).
+  const m = MODELS.find(x => x.id === wanted);
+  latentRT = m?.exposesLatent ? getLatentRuntime(engine, wanted) : { ok: false, reason: 'model not marked latent-capable' };
+  console.info(latentRT.ok
+    ? '[latent] get_last_hidden runtime ready — agents will compute real last-layer hidden states'
+    : `[latent] real latent unavailable (${latentRT.reason}) — falling back to compressed-text thoughts`);
+
   progressWrap.style.display = 'none';
-  setModelStatus(`${label} ready${busEnabled ? ' · embedder ready' : ''}`, 'ready');
+  setModelStatus(`${label} ready${busEnabled ? ' · embedder ready' : ''}${latentRT.ok ? ' · latent ✓' : ''}`, 'ready');
   return true;
 }
 
@@ -450,6 +458,7 @@ async function runMode(mode, task, pattern, rounds, tx) {
   const totals = { tokens: 0, time: 0, calls: 0 };
   let carry = null;        // latent state looped back from previous round
   let finalText = '';
+  if (mode === 'latent') prevLatentVec = null;  // reset latent-space routing chain
 
   // The embedding bus only applies to the RecursiveMAS (latent) run, not the text baseline.
   const useBus = busEnabled && mode === 'latent';
@@ -579,11 +588,57 @@ async function runMixtureRound(mode, task, P, r, rounds, carry, isFinalRound, to
   return { carry: sOut.text, finalText: isFinalRound ? sOut.text : '' };
 }
 
+// Compute the agent's REAL last-layer hidden state via the model's get_last_hidden
+// graph function, run it through the RecursiveLink (if trained weights are present),
+// and render proof + the latent-space routing similarity into the transcript message.
+async function emitLatentProof(msg, system, user) {
+  const line = el('div', 'latent-proof', '🧠 computing latent (get_last_hidden)…');
+  msg.appendChild(line);
+
+  if (!latentRT.ok) {
+    line.innerHTML = `🧠 <span class="lp-warn">latent unavailable</span> · ${esc(latentRT.reason || '')} — using compressed-text thought`;
+    return null;
+  }
+
+  const info = await latentForward(latentRT, `${system}\n\n${user}`);
+  if (!info.ok) {
+    line.innerHTML = `🧠 <span class="lp-warn">get_last_hidden failed</span> · ${esc(info.error || '')}`;
+    return null;
+  }
+
+  let vec = info.vector, linkNote = '';
+  if (vec && recursiveLinks?.links?.length) {
+    try { vec = recursiveLinks.links[0].apply(vec); linkNote = ' · RecursiveLink R_out applied'; }
+    catch { linkNote = ' · RecursiveLink skipped (dim mismatch)'; }
+  } else if (vec) {
+    linkNote = ' · RecursiveLink: identity (no trained weights yet)';
+  }
+
+  let cosNote = '';
+  if (vec && prevLatentVec) {
+    const c = cosine(prevLatentVec, vec);
+    if (c != null) cosNote = ` · cos(prev)=${c.toFixed(3)}`;
+  }
+  if (vec) prevLatentVec = vec;
+
+  const shapeStr = info.shape ? `[${info.shape.join('×')}]` : '?';
+  const normStr  = info.norm != null ? ` · ‖h‖=${info.norm.toFixed(2)}` : '';
+  const poolNote = info.vector ? '' : ` · ${esc(info.note || 'values unavailable (f16)')}`;
+  line.innerHTML = `🧠 <span class="lp-ok">get_last_hidden</span> → ${esc(shapeStr)} ${esc(info.dtype || '')}` +
+                   `${normStr}${cosNote}${esc(linkNote)}${poolNote}`;
+  return info;
+}
+
 // One agent generation + transcript entry (final decode is streamed).
 async function runAgentCall({ a, system, user, decode, mode, totals, tx, suffix = '' }) {
   const kind = decode ? 'decode' : (mode === 'text' ? 'text' : 'latent');
   const msg = addMsg(tx, a.emoji, a.role + suffix, kind, '', kind);
   const body = msg.querySelector('.msg-body');
+
+  // Real latent space: for every intermediate (non-decode) step of the RecursiveMAS
+  // run, push the agent's prompt through the model's get_last_hidden graph function
+  // and surface proof of the on-device last-layer hidden state + latent-space routing.
+  if (kind === 'latent' && latentRT) await emitLatentProof(msg, system, user);
 
   let out;
   if (decode) {
