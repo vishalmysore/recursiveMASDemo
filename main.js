@@ -51,6 +51,10 @@ const CUSTOM_MODELS = [
     model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
     vram_required_MB: 900,
     label: 'RecursiveMAS 0.5B', size: '~0.5 GB · custom', exposesLatent: true,
+    // Trained RecursiveLink (compact base64-f16, served same-origin). With it the final
+    // answer is decoded FROM the latent (true to the paper); without it the inject paths
+    // fall back to the raw latent.
+    recursiveLink: 'recursivelink.min.json',
   },
 ];
 
@@ -503,7 +507,7 @@ async function runMode(mode, task, pattern, rounds, tx) {
 async function runLatentChain(task, P, rounds, tx) {
   const totals = { tokens: 0, time: 0, calls: 0 };
   const agents = P.agents;
-  let latent = null;      // pooled latent vector carried between agents / rounds
+  let latent = null;      // full latent SEQUENCE { data, rows } carried between agents
   let finalText = '';
   prevLatentVec = null;
 
@@ -516,7 +520,12 @@ async function runLatentChain(task, P, rounds, tx) {
       const a = agents[i];
       const isLastAgent = i === agents.length - 1;
       const decode = isFinalRound && isLastAgent;
-      const prompt = `${a.prompt}\n\n${buildUser(task, null, r, rounds, latent ? 'the previous agent (latent)' : null)}`;
+      // The task enters latent space ONCE (first agent); after that it travels only as
+      // the latent sequence — later agents get role context only, never the task text.
+      const isFirst = r === 1 && i === 0;
+      const prompt = isFirst
+        ? `${a.prompt}\n\nTASK: ${task}`
+        : `${a.prompt}\n\nBuild on the incoming latent state from the other agents.`;
 
       vizSetActive(a.key, { decode, state: decode ? 'decoding ← latent' : 'latent (get_last_hidden)' });
       await sleep(120);
@@ -526,12 +535,12 @@ async function runLatentChain(task, P, rounds, tx) {
         const msg = addMsg(tx, a.emoji, a.role, 'decode', '', 'decode');
         const body = msg.querySelector('.msg-body');
         const res = await chainDecode(latentRT, prompt, latent, {
-          // Decode via the model's own chat template (system = role prompt, user =
-          // task) so the final answer stays coherent instead of rambling.
+          // True to the paper: decode FROM the shared latent (inject), with NO task text
+          // in the prompt — the latent is the only carrier of the task at this hop.
           system: a.prompt,
-          user: buildUser(task, null, r, rounds, latent ? 'the previous agent (latent)' : null),
+          user: 'Decode the team\'s shared latent state into the final answer.',
           maxTokens: MAXTOK_DECODE, temperature: TEMP,
-          inject: !!(recursiveLinks?.links?.length),  // seed the decoder only with a trained R_out
+          inject: !!(recursiveLinks?.links?.length),  // seed the decoder with the trained R_out
           onToken: (d) => { body.textContent += d; body.scrollIntoView({ block: 'nearest' }); },
           isStopped: () => cancelled,
         });
@@ -557,7 +566,11 @@ async function runLatentChain(task, P, rounds, tx) {
           return { finalText, totals, transcript: tx, aborted: true };
         }
         const c = res.pooled && prevLatentVec ? cosine(prevLatentVec, res.pooled) : null;
-        if (res.pooled) { latent = res.pooled; prevLatentVec = res.pooled; }
+        if (res.data) {
+          let data = res.data, rows = res.rows;
+          if (rows > 64) { data = data.slice((rows - 64) * res.dim); rows = 64; }  // bound, like the wire cap
+          latent = { data, rows }; prevLatentVec = res.pooled;
+        }
         addChainProof(msg, { shape: res.shape, dtype: res.dtype, norm: res.norm, injected: res.injected, cos: c });
         msg.querySelector('.msg-meta').textContent = `${(((performance.now() - t0)) / 1000).toFixed(1)}s · no decode`;
       }
@@ -782,8 +795,9 @@ function addChainNote(tx, text) {
 function addChainProof(msg, info) {
   const parts = [];
   if (info.decoded) {
-    parts.push('<span class="lp-ok">decoded ← injected latent</span>');
-    if (info.injected === false) parts.push('(latent injection skipped)');
+    parts.push(info.injected
+      ? '<span class="lp-ok">decoded ← shared latent (vector-only)</span>'
+      : '<span class="lp-ok">decoded (prompt only — latent not injected)</span>');
     if (info.nTokens != null) parts.push(`${info.nTokens} tok`);
   } else {
     parts.push('<span class="lp-ok">get_last_hidden</span>');
