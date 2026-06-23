@@ -526,6 +526,10 @@ async function runLatentChain(task, P, rounds, tx) {
         const msg = addMsg(tx, a.emoji, a.role, 'decode', '', 'decode');
         const body = msg.querySelector('.msg-body');
         const res = await chainDecode(latentRT, prompt, latent, {
+          // Decode via the model's own chat template (system = role prompt, user =
+          // task) so the final answer stays coherent instead of rambling.
+          system: a.prompt,
+          user: buildUser(task, null, r, rounds, latent ? 'the previous agent (latent)' : null),
           maxTokens: MAXTOK_DECODE, temperature: TEMP,
           inject: !!(recursiveLinks?.links?.length),  // seed the decoder only with a trained R_out
           onToken: (d) => { body.textContent += d; body.scrollIntoView({ block: 'nearest' }); },

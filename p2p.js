@@ -102,10 +102,20 @@ function setStatus(text, cls) { const b = $('model-status'); b.textContent = cls
 function syncRolePrompt() { const k = myRoleKey(); $('role-prompt').value = ROLE_PROMPTS[k] || ''; if (!$('agent-name').value) $('agent-name').placeholder = `${ROLE_NAME[k]}-agent`; }
 
 function updateRunBtn() {
-  const btn = $('run-btn');
-  const ok = isHost && pm && pm.getConnected().length > 0 && myReady && peerReady;
+  const btn = $('run-btn'), hint = $('run-hint');
+  const connected = !!(pm && pm.getConnected().length > 0);
+  const ok = isHost && connected && myReady && peerReady;
   btn.disabled = !ok;
-  btn.title = ok ? '' : 'Needs: you = host, peer connected, both models loaded';
+  // Spell out exactly what's still blocking the run, most-blocking first.
+  let msg, warn = true;
+  if (!myReady)         msg = '⚠️ Load the RecursiveMAS-0.5B model first — use the “⤓ Load” button in step 1 above.';
+  else if (!connected)  msg = isHost ? 'Create an invite link above and connect your peer to enable the run.'
+                                     : 'Connect to the host above to join the collaboration.';
+  else if (!peerReady)  msg = '⏳ Waiting for the other agent to finish loading its model…';
+  else if (!isHost)     msg = '✓ Connected. The host drives the run — ask them to click ▶.';
+  else { msg = '✓ Both agents loaded and connected — click ▶ to run.'; warn = false; }
+  if (hint) { hint.textContent = msg; hint.classList.toggle('run-hint-warn', warn); }
+  btn.title = ok ? '' : msg;
 }
 
 // ── Model load ─────────────────────────────────────────────────────────────────────
@@ -259,7 +269,10 @@ async function handleHop(from, { seq, vec, task, rounds }) {
     if (isFinal) {
       const msg = addMsg('🧩', `${ROLE_NAME[myRoleKey()]} · decoding`, 'decode');
       const body = msg.querySelector('.msg-body');
-      const res = await chainDecode(rt, prompt, prefix, { maxTokens: MAX_DECODE, temperature: TEMP, onToken: d => { body.textContent += d; } });
+      // Decode the final answer through the model's own chat template (system =
+      // role prompt, user = task) so it stays coherent instead of rambling.
+      const userMsg = `${task}\n\nYou are finishing a latent-space collaboration with the other agent. Give the team's final answer.`;
+      const res = await chainDecode(rt, prompt, prefix, { system: myPrompt(), user: userMsg, maxTokens: MAX_DECODE, temperature: TEMP, onToken: d => { body.textContent += d; } });
       if (!res.ok) { addNote(`decode failed (${res.stage}): ${res.error}`, true); pm.broadcast({ type: 'note', text: 'decode failed' }); return; }
       if (!body.textContent) body.textContent = res.text || '(no output)';
       addProof(msg, { decoded: true, nTokens: res.nTokens });
@@ -311,4 +324,5 @@ $('be-host-btn').onclick       = () => { location.hash = ''; location.reload(); 
 $('run-btn').onclick           = run;
 syncRolePrompt();
 initFromHash();
+updateRunBtn();
 if (!navigator.gpu) setStatus('WebGPU not detected — open in Chrome/Edge 113+', 'error');

@@ -30,6 +30,7 @@
     .btn-link { background:none; border:none; color:var(--accent); cursor:pointer; font:inherit; padding:0; text-decoration:underline; }
     .conn-ok { display:none; align-items:center; gap:.5rem; padding:.6rem .85rem; border-radius:8px;
       background: rgba(63,185,80,.12); border:1px solid var(--success); color: var(--text); font-size:.9rem; }
+    .run-hint-warn { color: var(--warning); font-weight:600; }
     @media (max-width: 720px) { .p2p-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -132,7 +133,7 @@
         </label>
         <button id="run-btn" class="btn-primary" disabled>▶ Run latent collaboration</button>
       </div>
-      <p class="muted" style="font-size:.75rem">Enabled once both peers are connected and have loaded the model.</p>
+      <p id="run-hint" class="muted run-hint-warn" style="font-size:.8rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 first.</p>
     </section>
 
     <!-- Transcript -->

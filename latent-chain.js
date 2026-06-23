@@ -100,6 +100,27 @@ function encodeCapped(rt, text) {
   return ids.length > cap ? ids.slice(-cap) : ids;
 }
 
+// Format (system, user) with the MODEL'S OWN chat template (e.g. ChatML for the
+// Qwen-based RecursiveMAS build) by reusing web-llm's loaded Conversation object.
+// Without this the decoder is fed a raw concatenated string with no role markers,
+// which makes a small instruct model ramble (often in Chinese). Returns the fully
+// templated prompt string ending in the assistant reply header, or null if the
+// template can't be reached — caller then falls back to the raw text. The shared
+// conversation is reset before and after, so engine state is left clean.
+export function formatChatPrompt(rt, system, user) {
+  const conv = rt?.pipeline?.conversation;
+  if (!conv || typeof conv.getPromptArray !== 'function' || !conv.config?.roles) return null;
+  try {
+    conv.reset();
+    if (system != null && system !== '') conv.override_system_message = system;
+    conv.appendMessage('user', String(user ?? ''));
+    conv.appendReplyHeader('assistant');           // model continues as the assistant
+    const arr = conv.getPromptArray();             // text-only model → array of strings
+    return arr.map(x => (Array.isArray(x) ? x.join('') : x)).join('');
+  } catch { return null; }
+  finally { try { conv.reset(); } catch { /* leave clean */ } }
+}
+
 // ── Intermediate agent: latent in → latent out, never decodes text ─────────────
 export async function chainForward(rt, text, prefixVec) {
   if (!rt?.ok) return { ok: false, error: rt?.reason || 'no runtime', stage: 'runtime' };
@@ -148,8 +169,14 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
   const stopTokens = (rt.stopTokens && rt.stopTokens.length ? rt.stopTokens : pipeline.stopTokens) || [];
   const maxTokens = opts.maxTokens || 256;
   const genConfig = { temperature: opts.temperature ?? 0.6, top_p: opts.top_p ?? 0.95 };
+  // Prefer the model's real chat template (keeps the final answer coherent); fall
+  // back to the raw text if a system/user split wasn't supplied or the template is
+  // unreachable.
+  const promptText = (opts.system != null || opts.user != null)
+    ? (formatChatPrompt(rt, opts.system, opts.user) ?? text)
+    : text;
   let tokens;
-  try { tokens = encodeCapped(rt, text); } catch (e) { return { ok: false, error: e.message, stage: 'tokenize' }; }
+  try { tokens = encodeCapped(rt, promptText); } catch (e) { return { ok: false, error: e.message, stage: 'tokenize' }; }
 
   const out = [];
   let dim = null, logits = null, injected = false, emitted = '';
