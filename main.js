@@ -527,6 +527,7 @@ async function runLatentChain(task, P, rounds, tx) {
         const body = msg.querySelector('.msg-body');
         const res = await chainDecode(latentRT, prompt, latent, {
           maxTokens: MAXTOK_DECODE, temperature: TEMP,
+          inject: !!(recursiveLinks?.links?.length),  // seed the decoder only with a trained R_out
           onToken: (d) => { body.textContent += d; body.scrollIntoView({ block: 'nearest' }); },
           isStopped: () => cancelled,
         });

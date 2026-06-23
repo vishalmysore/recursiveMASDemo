@@ -16,6 +16,34 @@
    returns { ok:false, reason } so the app degrades gracefully to its text behaviour.
    ════════════════════════════════════════════════════════════════════════════ */
 
+// Decode one IEEE-754 half (f16 bit pattern) → JS number. Inverse of latent-chain's
+// f32to16; needed because tvmjs NDArray.toArray() throws "Unsupported data type
+// float16", but toRawBytes() gives us the raw halves to decode ourselves.
+export function f16to32(h) {
+  const s = (h & 0x8000) ? -1 : 1;
+  const e = (h & 0x7c00) >> 10;
+  const f = h & 0x03ff;
+  if (e === 0)    return s * f * 5.9604644775390625e-8;   // subnormal: f * 2^-24
+  if (e === 0x1f) return f ? NaN : s * Infinity;
+  return s * (1 + f / 1024) * Math.pow(2, e - 15);        // normal
+}
+
+// Read a CPU-resident NDArray into a Float32Array, transparently decoding float16
+// (which toArray() cannot handle) via raw bytes. Returns null if unreadable.
+export function ndToFloat32(cpu) {
+  const dt = (cpu?.dtype || '').toLowerCase();
+  if (dt.includes('float16') || dt === 'f16') {
+    try {
+      const bytes = cpu.toRawBytes();                                  // Uint8Array, 2 bytes/half
+      const u16 = new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 1);
+      const out = new Float32Array(u16.length);
+      for (let i = 0; i < u16.length; i++) out[i] = f16to32(u16[i]);
+      return out;
+    } catch { return null; }
+  }
+  try { return cpu.toArray(); } catch { return null; }
+}
+
 // Resolve the low-level latent runtime for a loaded model, or explain why it can't.
 export function getLatentRuntime(engine, modelId) {
   try {
@@ -24,9 +52,20 @@ export function getLatentRuntime(engine, modelId) {
     const vm = pipeline.vm;
     if (!vm?.getFunction) return { ok: false, reason: 'pipeline has no tvm VM (worker engine?)' };
 
+    // tvmjs requires an active memory scope around getFunction (it returns a TVM
+    // object); detach the handles so they outlive the scope — exactly how web-llm
+    // itself fetches prefill/decode. Without beginScope, getFunction throws
+    // "Must call beginScope to use functions that returns TVM objects", which the
+    // old bare catch silently mislabeled as "function not in the model lib".
     let fGLH = null, fDLH = null;
-    try { fGLH = vm.getFunction('get_last_hidden'); } catch { /* not in lib */ }
-    try { fDLH = vm.getFunction('decode_last_hidden'); } catch { /* optional */ }
+    const tvm = pipeline.tvm;
+    tvm.beginScope();
+    try {
+      try { fGLH = tvm.detachFromCurrentScope(vm.getFunction('get_last_hidden')); } catch { /* not in lib */ }
+      try { fDLH = tvm.detachFromCurrentScope(vm.getFunction('decode_last_hidden')); } catch { /* optional */ }
+    } finally {
+      tvm.endScope();
+    }
     if (!fGLH) {
       return { ok: false, reason: 'get_last_hidden is not in this model lib — it is a stock model, not the latent-exposing build' };
     }
@@ -36,7 +75,7 @@ export function getLatentRuntime(engine, modelId) {
     // Capture the REAL forward handles up-front (latentForward swaps pipeline.prefill
     // temporarily; the latent-chain decode loop needs the genuine LM-head prefill/decode).
     return {
-      ok: true, pipeline, vm, tvm: pipeline.tvm, fGLH, fDLH,
+      ok: true, pipeline, vm, tvm, fGLH, fDLH,
       realPrefill: pipeline.prefill,
       realDecode:  pipeline.decoding,
       stopTokens:  Array.isArray(pipeline.stopTokens) ? pipeline.stopTokens.slice() : [],
@@ -65,22 +104,21 @@ export async function latentForward(rt, text) {
 
   const savedPrefill = pipeline.prefill;
   const savedDecode  = pipeline.decoding;
-  let hiddenGPU = null;
+  let shape = null, dtype = null, vector = null, norm = null, seq = null, dim = null;
+  let forwardErr = null, note = null;
+
+  // embedAndForward and tvm.empty both return TVM objects, so the whole forward+pool
+  // must run inside ONE tvm memory scope (mirrors web-llm's own prefill loop). We read
+  // plain JS values out inside the scope, so nothing needs detaching — endScope frees
+  // the GPU hidden tensor and the CPU copy automatically (no leak across agent calls).
+  tvm.beginScope();
   try {
     pipeline.resetChat(true);          // clear KV cache + re-add sequence 0 (keep stats)
     pipeline.prefill = fGLH;           // identical (emb, kv, params) signature
     if (fDLH) pipeline.decoding = fDLH;
-    hiddenGPU = await pipeline.embedAndForward([tokens], tokens.length);
-  } catch (e) {
-    pipeline.prefill = savedPrefill; pipeline.decoding = savedDecode;
-    try { pipeline.resetChat(true); } catch { /* ignore */ }
-    return { ok: false, error: 'forward: ' + (e?.message || e) };
-  }
-  pipeline.prefill = savedPrefill; pipeline.decoding = savedDecode;
+    const hiddenGPU = await pipeline.embedAndForward([tokens], tokens.length);
 
-  // hiddenGPU: NDArray [1, seq, hidden] (model dtype, typically f16). Pool on CPU.
-  let shape = null, dtype = null, vector = null, norm = null, seq = null, dim = null;
-  try {
+    // hiddenGPU: NDArray [1, seq, hidden] (model dtype, typically f16). Pool on CPU.
     shape = (hiddenGPU.shape || []).slice();
     dtype = hiddenGPU.dtype;
     dim = shape[shape.length - 1] || null;
@@ -88,8 +126,7 @@ export async function latentForward(rt, text) {
     const cpu = tvm.empty(shape, dtype, tvm.cpu());
     cpu.copyFrom(hiddenGPU);
     await pipeline.device.sync();
-    let flat = null;
-    try { flat = cpu.toArray(); } catch { /* f16 toArray may be unsupported; shape is still proof */ }
+    const flat = ndToFloat32(cpu);   // toArray, or decode f16 raw bytes
     if (flat && dim && flat.length >= seq * dim) {
       vector = new Float32Array(dim);
       for (let t = 0; t < seq; t++) {
@@ -101,11 +138,16 @@ export async function latentForward(rt, text) {
       norm = Math.sqrt(s);
     }
   } catch (e) {
-    // We still got a real hidden tensor; just couldn't pool it. Report shape anyway.
-    return { ok: true, shape, dtype, seq, dim, vector: null, norm: null, note: 'pool: ' + (e?.message || e) };
+    if (shape == null) forwardErr = 'forward: ' + (e?.message || e);  // failed before a tensor came back
+    else note = 'pool: ' + (e?.message || e);                         // got the tensor, only pooling failed
   } finally {
+    tvm.endScope();
+    pipeline.prefill = savedPrefill; pipeline.decoding = savedDecode;
     try { pipeline.resetChat(true); } catch { /* leave clean */ }
   }
+
+  if (forwardErr) return { ok: false, error: forwardErr };
+  if (note)       return { ok: true, shape, dtype, seq, dim, vector: null, norm: null, note };
   return { ok: true, shape, dtype, seq, dim, vector, norm };
 }
 

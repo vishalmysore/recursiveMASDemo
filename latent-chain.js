@@ -24,6 +24,8 @@
    as { ok:false, error, stage } so the caller can fall back to the text path.
    ════════════════════════════════════════════════════════════════════════════ */
 
+import { ndToFloat32 } from './latent-core.js';
+
 // ── float32 → float16 (round-to-nearest-even), for uploading the latent token ──
 const _f32 = new Float32Array(1);
 const _u32 = new Uint32Array(_f32.buffer);
@@ -58,7 +60,11 @@ function latentToken(rt, vec, dtype) {
   if (isF16(dtype)) {
     const u16 = new Uint16Array(dim);
     for (let i = 0; i < dim; i++) u16[i] = f32to16(vec[i]);
-    return tvm.empty([1, dim], 'float16', pipeline.device).copyFrom(u16);
+    // tvmjs copyFrom rejects float16 (no JS Float16Array) → "Unsupported data type
+    // float16". Upload the raw half-float bytes instead, which has no dtype check.
+    const nd = tvm.empty([1, dim], 'float16', pipeline.device);
+    nd.copyFromRawBytes(new Uint8Array(u16.buffer));
+    return nd;
   }
   return tvm.empty([1, dim], dtype || 'float32', pipeline.device).copyFrom(vec);
 }
@@ -112,7 +118,7 @@ export async function chainForward(rt, text, prefixVec) {
       try {
         const pre = latentToken(rt, prefixVec, tokEmb.dtype);     // [1, dim]
         all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
-      } catch { all = tokEmb; total = tokens.length; }            // injection failed → forward prompt only
+      } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] latent inject failed:', e?.message || e); }  // forward prompt only
     }
     all = all.view([1].concat(all.shape));                        // [1, total, dim]
     const ret = rawForward(rt, fGLH, all, total);
@@ -123,7 +129,7 @@ export async function chainForward(rt, text, prefixVec) {
     const cpu = tvm.empty(shape, dtype, tvm.cpu());
     cpu.copyFrom(hidden);
     await pipeline.device.sync();
-    let flat = null; try { flat = cpu.toArray(); } catch { /* f16 toArray may fail */ }
+    const flat = ndToFloat32(cpu);   // toArray, or decode f16 raw bytes
     tvm.endScope();
     const { vec, norm } = poolHidden(flat, seq, d);
     return { ok: true, shape, dtype, dim: d, seq, pooled: vec, norm, injected };
@@ -154,11 +160,16 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
     const tokEmb = pipeline.getTokensEmbeddings(tokens);
     dim = tokEmb.shape[tokEmb.shape.length - 1];
     let all = tokEmb, total = tokens.length;
-    if (prefixVec && prefixVec.length === dim) {
+    // Only seed the decoder with the latent when a trained RecursiveLink (R_out) is
+    // present (opts.inject). With R_out=identity an untrained latent token derails
+    // generation on a small model, so by default the final answer decodes prompt-only
+    // and stays coherent. Intermediate hops (chainForward) always inject, so latent
+    // state is still genuinely carried between agents.
+    if (opts.inject && prefixVec && prefixVec.length === dim) {
       try {
         const pre = latentToken(rt, prefixVec, tokEmb.dtype);
         all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
-      } catch { all = tokEmb; total = tokens.length; }
+      } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] decode inject failed:', e?.message || e); }
     }
     all = all.view([1].concat(all.shape));
     const ret = rawForward(rt, realPrefill, all, total);
