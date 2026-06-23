@@ -35,13 +35,20 @@ export class RecursiveLink {
 
   /** Apply to a single hidden vector h (Float32Array | number[]) -> Float32Array. */
   apply(h) {
-    const { w1, b1, w2, b2, w3 } = this.w;
-    const z = matVec(w1, h, b1);               // bottleneck
+    const { w1, b1, w2, b2, w3, scale } = this.w;
+    // Unit-normalize first (matches training: a pooled hidden is ~100s× an embedding,
+    // so direction is learned in normalized space and `scale` restores magnitude).
+    let n = 0; for (let i = 0; i < h.length; i++) n += h[i] * h[i];
+    n = Math.sqrt(n) + 1e-6;
+    const hn = new Float32Array(h.length);
+    for (let i = 0; i < h.length; i++) hn[i] = h[i] / n;
+    const z = matVec(w1, hn, b1);              // bottleneck
     for (let i = 0; i < z.length; i++) z[i] = gelu(z[i]);
     const proj = matVec(w2, z, b2);            // -> target dim
-    const res = w3 ? matVec(w3, h) : h;        // outer: W3·h ; inner: identity
+    const res = w3 ? matVec(w3, hn) : hn;      // outer: W3·hn ; inner: identity
+    const s = (scale == null ? 1 : scale);     // learned embedding magnitude
     const out = new Float32Array(proj.length);
-    for (let i = 0; i < out.length; i++) out[i] = res[i] + proj[i];
+    for (let i = 0; i < out.length; i++) out[i] = (res[i] + proj[i]) * s;
     return out;
   }
 
