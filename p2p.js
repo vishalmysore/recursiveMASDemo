@@ -101,6 +101,17 @@ function myName()    { return $('agent-name').value.trim() || `${ROLE_NAME[myRol
 function setStatus(text, cls) { const b = $('model-status'); b.textContent = cls; b.className = 'status-badge status-' + cls; $('model-hint').textContent = text; }
 function syncRolePrompt() { const k = myRoleKey(); $('role-prompt').value = ROLE_PROMPTS[k] || ''; if (!$('agent-name').value) $('agent-name').placeholder = `${ROLE_NAME[k]}-agent`; }
 
+// The model must be loaded before either peer can start the WebRTC handshake,
+// so gate both "start connecting" buttons on it and explain why when disabled.
+function updateConnectBtns() {
+  const ci = $('create-invite-btn'), jn = $('join-btn');
+  const cih = $('invite-gate-hint'), jnh = $('join-gate-hint');
+  if (ci) ci.disabled = !myReady;
+  if (jn) jn.disabled = !myReady;
+  if (cih) cih.style.display = myReady ? 'none' : '';
+  if (jnh) jnh.style.display = myReady ? 'none' : '';
+}
+
 function updateRunBtn() {
   const btn = $('run-btn'), hint = $('run-hint');
   const connected = !!(pm && pm.getConnected().length > 0);
@@ -134,6 +145,7 @@ async function loadModel() {
   myReady = true;
   setStatus('Model ready · latent ✓ — you can connect & collaborate', 'ready');
   if (pm) pm.broadcast({ type: 'ready' });
+  updateConnectBtns();
   updateRunBtn();
   return true;
 }
@@ -324,5 +336,6 @@ $('be-host-btn').onclick       = () => { location.hash = ''; location.reload(); 
 $('run-btn').onclick           = run;
 syncRolePrompt();
 initFromHash();
+updateConnectBtns();
 updateRunBtn();
 if (!navigator.gpu) setStatus('WebGPU not detected — open in Chrome/Edge 113+', 'error');

@@ -80,7 +80,8 @@
       <div id="connect-host">
         <p class="muted">Start a session and send the invite link to your friend — WhatsApp, email, anything.
           They open it, send back one short code, and you're connected.</p>
-        <button id="create-invite-btn" class="btn-primary">🔗 Create invite link</button>
+        <button id="create-invite-btn" class="btn-primary" disabled>🔗 Create invite link</button>
+        <p id="invite-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 before creating an invite.</p>
 
         <div id="invite-ready" style="display:none">
           <p class="connect-step"><strong>①</strong> Send this link to your friend:</p>
@@ -102,7 +103,8 @@
       <div id="connect-join" style="display:none">
         <p class="invited-banner">🎉 You've been invited to collaborate.
           <span id="invited-role-hint" class="muted"></span></p>
-        <button id="join-btn" class="btn-primary">Generate my answer code</button>
+        <button id="join-btn" class="btn-primary" disabled>Generate my answer code</button>
+        <p id="join-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 before generating your answer code.</p>
 
         <div id="answer-ready" style="display:none">
           <p class="connect-step">Send this <em>answer code</em> back to the host to finish connecting:</p>
