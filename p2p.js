@@ -80,9 +80,7 @@ function addMsg(emoji, role, kind) {
 function addProof(msg, info) {
   const p = [];
   if (info.decoded) {
-    const how = info.viaChat ? 'decoded via chat pipeline · latent hops above'
-              : (info.injected ? 'decoded ← injected latent' : 'decoded (prompt-conditioned)');
-    p.push(`<span class="lp-ok">${how}</span>`);
+    p.push(`<span class="lp-ok">${info.injected ? 'decoded ← shared latent (vector-only)' : 'decoded (prompt only — latent not injected)'}</span>`);
     if (info.nTokens != null) p.push(`${info.nTokens} tok`);
   }
   else {
@@ -269,35 +267,6 @@ function onMessage(from, msg) {
   if (msg.type === 'latent-hop') { handleHop(from, msg); return; }
 }
 
-// Turn the shared latent state into the final answer. The genuine latent hops are
-// shown above; this hop decodes words. We use web-llm's real chat pipeline (correct
-// chat template + sampling + repetition handling) because the on-device latent-chain
-// decoder, with an untrained R_out=identity, produces token salad on this 0.5B model.
-// Falls back to chainDecode if the chat path is unavailable.
-async function decodeFinal(body, userMsg, prefix, prompt) {
-  try {
-    if (!engine) throw new Error('engine not ready');
-    let text = '', nTokens = null;
-    const chunks = await engine.chat.completions.create({
-      model: MODEL_ID,
-      messages: [{ role: 'system', content: myPrompt() }, { role: 'user', content: userMsg }],
-      temperature: TEMP, max_tokens: MAX_DECODE, stream: true, stream_options: { include_usage: true },
-    });
-    for await (const ch of chunks) {
-      const d = ch.choices?.[0]?.delta?.content || '';
-      if (d) { text += d; body.textContent += d; }
-      if (ch.usage) nTokens = ch.usage.completion_tokens ?? ch.usage.total_tokens ?? nTokens;
-    }
-    return { text: text.trim(), viaChat: true, nTokens };
-  } catch (e) {
-    addNote(`chat decode unavailable (${e?.message || e}) — falling back to latent decode`, true);
-    body.textContent = '';
-    const res = await chainDecode(rt, prompt, prefix, { system: myPrompt(), user: userMsg, maxTokens: MAX_DECODE, temperature: TEMP, onToken: d => { body.textContent += d; } });
-    if (!res.ok) { addNote(`decode failed (${res.stage}): ${res.error}`, true); return { text: null }; }
-    return { text: res.text, viaChat: false, nTokens: res.nTokens };
-  }
-}
-
 function addFinal(role, text) {
   const m = addMsg('🏁', `${role} · final answer`, 'decode');
   m.querySelector('.msg-body').textContent = text || '(no output)';
@@ -309,18 +278,27 @@ async function handleHop(from, { seq, vec, task, rounds }) {
     const c = seq + 1;                       // this is the c-th computation in the chain
     const isFinal = c === 2 * rounds;
     const prefix = Float32Array.from(vec);
-    const prompt = `${myPrompt()}\n\nTASK: ${task}\nYou are mid-collaboration; build on the incoming latent state from the other agent.`;
+    // Role only — NO task text. The task entered latent space once (the host's first
+    // forward encoded it); from then on it travels solely as the 896-d vector. Re-feeding
+    // the task as text here would mean the answer comes from the prompt, not the latent.
+    const prompt = `${myPrompt()}\n\nBuild on the incoming latent state from the other agent.`;
     addWire(`◀ received latent from ${from} (hop ${seq}/${2 * rounds}) — ${vec.length}-d vector`);
 
     if (isFinal) {
-      const msg = addMsg('🧩', `${ROLE_NAME[myRoleKey()]} · decoding`, 'decode');
+      const msg = addMsg('🧩', `${ROLE_NAME[myRoleKey()]} · decoding shared latent`, 'decode');
       const body = msg.querySelector('.msg-body');
-      const userMsg = `${task}\n\nYou are finishing a latent-space collaboration with the other agent. Give the team's final answer.`;
-      const { text: finalText, viaChat, nTokens } = await decodeFinal(body, userMsg, prefix, prompt);
-      if (finalText == null) { pm.broadcast({ type: 'note', text: 'decode failed' }); return; }
-      if (!body.textContent) body.textContent = finalText || '(no output)';
-      addProof(msg, { decoded: true, viaChat, nTokens });
-      pm.broadcast({ type: 'final', text: finalText, fromRole: ROLE_NAME[myRoleKey()] });
+      // True to the RecursiveMAS premise: the final answer is decoded FROM the shared
+      // latent vector (inject = true), with no task text in the prompt — this is the
+      // single place a latent becomes text. Nothing on the wire was ever text.
+      const userMsg = 'Decode the team\'s shared latent state into the final answer.';
+      const res = await chainDecode(rt, prompt, prefix, {
+        inject: true, system: myPrompt(), user: userMsg,
+        maxTokens: MAX_DECODE, temperature: TEMP, onToken: d => { body.textContent += d; },
+      });
+      if (!res.ok) { addNote(`latent decode failed (${res.stage}): ${res.error}`, true); pm.broadcast({ type: 'note', text: 'decode failed' }); return; }
+      if (!body.textContent) body.textContent = res.text || '(no output)';
+      addProof(msg, { decoded: true, injected: res.injected, nTokens: res.nTokens });
+      pm.broadcast({ type: 'final', text: res.text, fromRole: ROLE_NAME[myRoleKey()] });
     } else {
       const msg = addMsg('🧬', `${ROLE_NAME[myRoleKey()]} · latent only`, 'latent');
       msg.querySelector('.msg-body').textContent = '⟶ latent only (no text decode)';

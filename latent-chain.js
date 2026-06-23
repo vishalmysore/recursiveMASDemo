@@ -69,6 +69,34 @@ function latentToken(rt, vec, dtype) {
   return tvm.empty([1, dim], dtype || 'float32', pipeline.device).copyFrom(vec);
 }
 
+// Scale a pooled latent so its L2 norm matches the mean per-token norm of the prompt's
+// input embeddings. A pooled last-hidden vector has a far larger magnitude than a normal
+// input embedding, so injecting it raw is wildly out-of-distribution and derails the
+// model. Best effort: returns the raw vector unchanged if anything can't be measured.
+async function calibrateLatentNorm(rt, vec, tokEmb, dim, seqLen) {
+  try {
+    const { tvm, pipeline } = rt;
+    const cpu = tvm.empty(tokEmb.shape, tokEmb.dtype, tvm.cpu());
+    cpu.copyFrom(tokEmb);
+    await pipeline.device.sync();
+    const flat = ndToFloat32(cpu);
+    const seqN = tokEmb.shape[0] || seqLen || 1;
+    if (!flat || flat.length < seqN * dim) return vec;
+    let embNorm = 0;
+    for (let t = 0; t < seqN; t++) {
+      let s = 0; const o = t * dim;
+      for (let k = 0; k < dim; k++) { const v = flat[o + k]; s += v * v; }
+      embNorm += Math.sqrt(s);
+    }
+    embNorm /= seqN;
+    let latNorm = 0;
+    for (let k = 0; k < dim; k++) latNorm += vec[k] * vec[k];
+    latNorm = Math.sqrt(latNorm);
+    if (embNorm > 0 && latNorm > 0) return Float32Array.from(vec, x => x * (embNorm / latNorm));
+    return vec;
+  } catch { return vec; }
+}
+
 // Mean-pool a CPU-resident hidden tensor [.. , seq, dim] → Float32Array[dim] + L2 norm.
 function poolHidden(flat, seq, dim) {
   if (!flat || flat.length < seq * dim) return { vec: null, norm: null };
@@ -195,14 +223,16 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
     const tokEmb = pipeline.getTokensEmbeddings(tokens);
     dim = tokEmb.shape[tokEmb.shape.length - 1];
     let all = tokEmb, total = tokens.length;
-    // Only seed the decoder with the latent when a trained RecursiveLink (R_out) is
-    // present (opts.inject). With R_out=identity an untrained latent token derails
-    // generation on a small model, so by default the final answer decodes prompt-only
-    // and stays coherent. Intermediate hops (chainForward) always inject, so latent
-    // state is still genuinely carried between agents.
+    // Seed the decoder with the shared latent (opts.inject) so the answer is decoded
+    // FROM the vector, not from the prompt. With R_out=identity this is the untrained
+    // edge: we calibrate the latent's magnitude to the prompt-embedding scale so the
+    // injected "thought token" is at least in-distribution by norm (a pooled last-hidden
+    // is far larger than an input embedding). Coherence still ultimately needs a trained
+    // RecursiveLink; this just gives the latent its best chance of decoding to something.
     if (opts.inject && prefixVec && prefixVec.length === dim) {
       try {
-        const pre = latentToken(rt, prefixVec, tokEmb.dtype);
+        const inj = await calibrateLatentNorm(rt, prefixVec, tokEmb, dim, tokens.length);
+        const pre = latentToken(rt, inj, tokEmb.dtype);
         all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] decode inject failed:', e?.message || e); }
     }
