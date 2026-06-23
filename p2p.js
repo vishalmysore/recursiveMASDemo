@@ -11,6 +11,7 @@
 import * as webllm from '@mlc-ai/web-llm';
 import { getLatentRuntime, cosine } from './latent-core.js';
 import { chainForward, chainDecode } from './latent-chain.js';
+import { loadRecursiveLinks } from './recursive-link.js';
 import { PeerManager } from './peer-manager.js';
 
 // ── The one shared model (must match on both peers) ──────────────────────────────
@@ -22,6 +23,11 @@ const CUSTOM_MODEL = {
   // ?v=N cache-buster — bump whenever the .wasm is rebuilt (WebLLM caches by URL).
   model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
   vram_required_MB: 900,
+  // Trained RecursiveLink — maps the latent into the model's input-embedding space so
+  // the vector-only decode is coherent. Produce recursivelink.json with the
+  // recursiveMASWebLLM repo's train_recursivelink.py, publish it, then set its URL here.
+  // Until set, the inject paths fall back to magnitude calibration.
+  // recursiveLink: 'https://github.com/vishalmysore/recursiveMASWebLLM/releases/download/model-RecursiveMAS-0.5B/recursivelink.json',
 };
 const appConfig = () => ({
   ...webllm.prebuiltAppConfig,
@@ -145,8 +151,19 @@ async function loadModel() {
   } catch (e) { setStatus('Load failed: ' + (e?.message || e), 'error'); return false; }
   rt = getLatentRuntime(engine, MODEL_ID);
   if (!rt.ok) { setStatus('Latent runtime unavailable: ' + rt.reason, 'error'); return false; }
+  // Load the trained RecursiveLink if one is published — it maps the latent into the
+  // model's input-embedding space so the vector-only decode is coherent. Optional: if
+  // it's absent or fails to load, the inject paths fall back to magnitude calibration.
+  let linkNote = '';
+  if (CUSTOM_MODEL.recursiveLink) {
+    try {
+      const { links } = await loadRecursiveLinks(CUSTOM_MODEL.recursiveLink);
+      rt.link = links?.[0] || null;
+      if (rt.link) linkNote = ' + RecursiveLink';
+    } catch (e) { console.warn('[p2p] RecursiveLink load failed, using fallback:', e?.message || e); }
+  }
   myReady = true;
-  setStatus('Model ready · latent ✓ — you can connect & collaborate', 'ready');
+  setStatus(`Model ready · latent ✓${linkNote} — you can connect & collaborate`, 'ready');
   if (pm) pm.broadcast({ type: 'ready' });
   updateConnectBtns();
   updateRunBtn();

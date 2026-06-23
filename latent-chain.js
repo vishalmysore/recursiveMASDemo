@@ -165,7 +165,11 @@ export async function chainForward(rt, text, prefixVec) {
     let all = tokEmb, total = tokens.length, injected = false;
     if (prefixVec && prefixVec.length === dim) {
       try {
-        const pre = latentToken(rt, prefixVec, tokEmb.dtype);     // [1, dim]
+        // Map the latent into input-embedding space with the trained RecursiveLink
+        // (R_out) when one is loaded; otherwise inject the raw vector (today's behavior).
+        const inj = (rt.link && typeof rt.link.apply === 'function')
+          ? Float32Array.from(rt.link.apply(prefixVec)) : prefixVec;
+        const pre = latentToken(rt, inj, tokEmb.dtype);          // [1, dim]
         all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] latent inject failed:', e?.message || e); }  // forward prompt only
     }
@@ -231,7 +235,12 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
     // RecursiveLink; this just gives the latent its best chance of decoding to something.
     if (opts.inject && prefixVec && prefixVec.length === dim) {
       try {
-        const inj = await calibrateLatentNorm(rt, prefixVec, tokEmb, dim, tokens.length);
+        // Trained RecursiveLink (R_out) maps the latent into input-embedding space;
+        // without one, fall back to magnitude calibration (better than raw, not as
+        // good as a trained link).
+        const inj = (rt.link && typeof rt.link.apply === 'function')
+          ? Float32Array.from(rt.link.apply(prefixVec))
+          : await calibrateLatentNorm(rt, prefixVec, tokEmb, dim, tokens.length);
         const pre = latentToken(rt, inj, tokEmb.dtype);
         all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] decode inject failed:', e?.message || e); }
