@@ -19,6 +19,17 @@
     .dot.on { background: #34d399; } .dot.wait { background: #fbbf24; }
     .wire-msg { font-size: .72rem; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
     .role-select { display:flex; gap:.5rem; flex-wrap:wrap; margin:.4rem 0; }
+    .share-row { display:flex; gap:.5rem; align-items:flex-start; flex-wrap:wrap; margin-top:.35rem; }
+    .share-row .sig-box { flex:1 1 240px; min-width:200px; }
+    .copied-hint { color: var(--success); font-size:.8rem; align-self:center; font-weight:600; }
+    a.btn-secondary, a.btn-primary { text-decoration:none; }
+    .invited-banner { font-size:.95rem; color: var(--text); margin-bottom:.7rem; padding:.6rem .85rem;
+      background: rgba(99,102,241,.12); border:1px solid var(--accent); border-radius:8px; }
+    .connect-step { font-size:.82rem; color: var(--muted); margin:.9rem 0 .2rem; }
+    .connect-step strong { color: var(--text); }
+    .btn-link { background:none; border:none; color:var(--accent); cursor:pointer; font:inherit; padding:0; text-decoration:underline; }
+    .conn-ok { display:none; align-items:center; gap:.5rem; padding:.6rem .85rem; border-radius:8px;
+      background: rgba(63,185,80,.12); border:1px solid var(--success); color: var(--text); font-size:.9rem; }
     @media (max-width: 720px) { .p2p-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -59,23 +70,55 @@
 
     <!-- 2 · Connect -->
     <section class="card">
-      <div class="step-label">2 · CONNECT (no server — copy/paste codes)</div>
-      <div class="p2p-grid">
-        <div>
-          <p class="muted"><strong>Host</strong> — start here, share the invite code with your friend.</p>
-          <button id="create-invite-btn" class="btn-secondary">① Create invite code</button>
-          <textarea id="offer-out" class="sig-box" readonly placeholder="invite code appears here → send it to your friend"></textarea>
-          <p class="muted" style="font-size:.75rem">Then paste your friend's <em>answer code</em> below:</p>
-          <textarea id="answer-in" class="sig-box" placeholder="paste friend's answer code"></textarea>
-          <button id="accept-answer-btn" class="btn-secondary">③ Connect</button>
-        </div>
-        <div>
-          <p class="muted"><strong>Joiner</strong> — paste the host's invite code, send back your answer.</p>
-          <textarea id="offer-in" class="sig-box" placeholder="paste host's invite code"></textarea>
-          <button id="join-btn" class="btn-secondary">② Join &amp; make answer</button>
-          <textarea id="answer-out" class="sig-box" readonly placeholder="your answer code appears here → send it back to the host"></textarea>
+      <div class="step-label">2 · CONNECT YOUR PEER (no server)</div>
+
+      <!-- Connected confirmation (shown once the channel is live) -->
+      <div id="conn-ok" class="conn-ok">✅ <span id="conn-ok-text">Connected — ready to collaborate.</span></div>
+
+      <!-- HOST view (default) -->
+      <div id="connect-host">
+        <p class="muted">Start a session and send the invite link to your friend — WhatsApp, email, anything.
+          They open it, send back one short code, and you're connected.</p>
+        <button id="create-invite-btn" class="btn-primary">🔗 Create invite link</button>
+
+        <div id="invite-ready" style="display:none">
+          <p class="connect-step"><strong>①</strong> Send this link to your friend:</p>
+          <div class="share-row">
+            <input id="invite-url" class="sig-box" style="min-height:0" readonly />
+            <button id="copy-invite-btn" class="btn-secondary">📋 Copy link</button>
+            <a id="wa-share" class="btn-secondary" target="_blank" rel="noopener">💬 WhatsApp</a>
+            <span id="invite-copied" class="copied-hint" style="display:none">Copied!</span>
+          </div>
+          <p class="connect-step"><strong>②</strong> They'll reply with a short <em>answer code</em> — paste it here:</p>
+          <div class="share-row">
+            <textarea id="answer-in" class="sig-box" placeholder="paste your friend's answer code"></textarea>
+            <button id="accept-answer-btn" class="btn-secondary">✓ Connect</button>
+          </div>
         </div>
       </div>
+
+      <!-- JOINER view (auto-shown when opened via an invite link) -->
+      <div id="connect-join" style="display:none">
+        <p class="invited-banner">🎉 You've been invited to collaborate.
+          <span id="invited-role-hint" class="muted"></span></p>
+        <button id="join-btn" class="btn-primary">Generate my answer code</button>
+
+        <div id="answer-ready" style="display:none">
+          <p class="connect-step">Send this <em>answer code</em> back to the host to finish connecting:</p>
+          <div class="share-row">
+            <textarea id="answer-out" class="sig-box" readonly></textarea>
+            <button id="copy-answer-btn" class="btn-secondary">📋 Copy answer code</button>
+            <a id="wa-answer" class="btn-secondary" target="_blank" rel="noopener">💬 WhatsApp</a>
+            <span id="answer-copied" class="copied-hint" style="display:none">Copied!</span>
+          </div>
+          <p class="muted" id="answer-wait" style="font-size:.78rem;margin-top:.5rem">Waiting for the host to connect…</p>
+        </div>
+
+        <p class="muted" style="font-size:.78rem;margin-top:.9rem">
+          <button type="button" id="be-host-btn" class="btn-link">Or start your own session instead →</button>
+        </p>
+      </div>
+
       <div id="peers" style="margin-top:.8rem"></div>
     </section>
 

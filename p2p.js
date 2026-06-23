@@ -34,6 +34,9 @@ const ROLE_PROMPTS = {
   custom: '',
 };
 const ROLE_NAME = { travel: 'Travel', hotel: 'Hotel', custom: 'Agent' };
+// When someone joins via an invite link, default them to the role that pairs
+// with the host's (Travel ⇄ Hotel) so the two agents actually differ.
+const ROLE_COMPLEMENT = { travel: 'hotel', hotel: 'travel', custom: 'custom' };
 
 const TEMP = 0.6, MAX_DECODE = 320;
 
@@ -41,8 +44,30 @@ const TEMP = 0.6, MAX_DECODE = 320;
 const $ = (id) => document.getElementById(id);
 const el = (t, c, h) => { const e = document.createElement(t); if (c) e.className = c; if (h != null) e.innerHTML = h; return e; };
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
-const enc = (obj) => btoa(JSON.stringify(obj));
-const dec = (str) => JSON.parse(atob(str.trim()));
+// Compact SDP codec: deflate-raw → URL-safe base64, so an offer fits inside a
+// shareable #hash link (a raw SDP base64 is ~3× longer). Both peers need WebGPU,
+// which implies a browser with Compression/DecompressionStream.
+const toB64u   = (bytes) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64u = (str) => { const s = str.trim().replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(s + '='.repeat((4 - s.length % 4) % 4)), c => c.charCodeAt(0)); };
+async function encodeSDP(desc) {
+  const json = JSON.stringify({ type: desc.type, sdp: desc.sdp });
+  const cs = new CompressionStream('deflate-raw');
+  const w = cs.writable.getWriter(); w.write(new TextEncoder().encode(json)); w.close();
+  return toB64u(new Uint8Array(await new Response(cs.readable).arrayBuffer()));
+}
+async function decodeSDP(token) {
+  const ds = new DecompressionStream('deflate-raw');
+  const w = ds.writable.getWriter(); w.write(fromB64u(token)); w.close();
+  return JSON.parse(new TextDecoder().decode(await new Response(ds.readable).arrayBuffer()));
+}
+const waLink = (text) => 'https://wa.me/?text=' + encodeURIComponent(text);
+function wireShare(btn, hint, text) {
+  btn.onclick = () => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    hint.style.display = 'inline';
+    setTimeout(() => { hint.style.display = 'none'; }, 2200);
+  };
+}
 
 const tx = $('transcript');
 function addNote(text, warn) { tx.appendChild(el('div', 'latent-proof', `🛰️ <span class="${warn?'lp-warn':'lp-ok'}">${esc(text)}</span>`)); tx.scrollTop = tx.scrollHeight; }
@@ -110,6 +135,7 @@ function ensurePM() {
     myName: myName(), myPersona: myPrompt(), myModelLabel: MODEL_LBL,
     onPeerJoin: (name, hello) => {
       addWire(`connected to ${name} — role: ${String(hello.persona || '').slice(0, 48)}…`);
+      showConnected(name);
       renderPeers();
       if (myReady) pm.broadcast({ type: 'ready' });
       updateRunBtn();
@@ -130,23 +156,81 @@ function renderPeers() {
   }
 }
 
+let pendingOffer = null; // set when the page is opened from an invite link
+
+function showConnected(name) {
+  $('conn-ok-text').textContent = `Connected to ${name} — ready to collaborate below.`;
+  $('conn-ok').style.display = 'flex';
+  $('connect-host').style.display = 'none';
+  $('connect-join').style.display = 'none';
+}
+
+// Host: build a one-tap invite link (offer + role baked into the #hash).
 async function createInvite() {
   isHost = true;
-  const offer = await ensurePM().createOffer('peer');
-  $('offer-out').value = enc(offer);
-  addWire('invite created — send the code to your friend, then paste their answer.');
-  updateRunBtn();
+  const btn = $('create-invite-btn'); btn.disabled = true; btn.textContent = 'Creating…';
+  try {
+    const offer = await ensurePM().createOffer('peer');
+    const params = new URLSearchParams();
+    params.set('offer', await encodeSDP(offer));
+    params.set('role', myRoleKey());
+    const url = `${location.origin}${location.pathname}#${params.toString()}`;
+    $('invite-url').value = url;
+    $('invite-ready').style.display = '';
+    wireShare($('copy-invite-btn'), $('invite-copied'), url);
+    $('wa-share').href = waLink(`Join me for a RecursiveMAS latent-space collab — open this in Chrome/Edge:\n${url}`);
+    addWire('invite link ready — share it, then paste your friend\'s answer code.');
+  } catch (e) { addNote('invite error: ' + (e?.message || e), true); }
+  finally { btn.disabled = false; btn.textContent = '🔗 Create invite link'; updateRunBtn(); }
 }
+
+// Joiner: the offer came in via the link; produce the answer code to send back.
 async function joinWithOffer() {
   isHost = false;
-  const offer = dec($('offer-in').value);
-  const answer = await ensurePM().acceptOffer('host', offer);
-  $('answer-out').value = enc(answer);
-  addWire('answer made — send this code back to the host.');
+  if (!pendingOffer) { addNote('No invite found in this link.', true); return; }
+  const btn = $('join-btn'); btn.disabled = true; btn.textContent = 'Generating…';
+  try {
+    const answer = await ensurePM().acceptOffer('host', pendingOffer);
+    const code = await encodeSDP(answer);
+    $('answer-out').value = code;
+    $('answer-ready').style.display = '';
+    wireShare($('copy-answer-btn'), $('answer-copied'), code);
+    $('wa-answer').href = waLink(`Here's my RecursiveMAS answer code — paste it into your Connect box:\n\n${code}`);
+    addWire('answer code generated — send it back to the host.');
+  } catch (e) {
+    addNote('join error: ' + (e?.message || e), true);
+    btn.disabled = false; btn.textContent = 'Generate my answer code';
+  }
 }
+
+// Host: friend's answer code arrives → finish the handshake.
 async function acceptAnswer() {
-  await ensurePM().setAnswer('peer', dec($('answer-in').value));
-  addWire('answer accepted — establishing connection…');
+  const raw = $('answer-in').value.trim();
+  if (!raw) return;
+  const btn = $('accept-answer-btn'); btn.disabled = true;
+  try {
+    await ensurePM().setAnswer('peer', await decodeSDP(raw));
+    addWire('answer accepted — establishing connection…');
+  } catch (e) { addNote('connect error: ' + (e?.message || e), true); btn.disabled = false; }
+}
+
+// On load: if there's an invite in the #hash, flip into joiner mode and default
+// to the role that pairs with the host's.
+async function initFromHash() {
+  const params = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const offerToken = params.get('offer');
+  if (!offerToken) return;
+  try {
+    pendingOffer = await decodeSDP(offerToken);
+  } catch { addNote('This invite link looks invalid or corrupted.', true); return; }
+  const hostRole = params.get('role') || 'travel';
+  const myRole = ROLE_COMPLEMENT[hostRole] || 'travel';
+  const radio = document.querySelector(`input[name=role][value="${myRole}"]`);
+  if (radio) { radio.checked = true; syncRolePrompt(); }
+  $('connect-host').style.display = 'none';
+  $('connect-join').style.display = '';
+  $('invited-role-hint').textContent =
+    `Host is the ${ROLE_NAME[hostRole]} agent, so you're set up as the ${ROLE_NAME[myRole]} agent (change above if you like). Load the model, then generate your code.`;
 }
 
 // ── The latent protocol ──────────────────────────────────────────────────────────────
@@ -220,9 +304,11 @@ async function run() {
 // ── Wire up UI ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('input[name=role]').forEach(r => r.addEventListener('change', syncRolePrompt));
 $('load-btn').onclick          = loadModel;
-$('create-invite-btn').onclick = () => createInvite().catch(e => addNote('invite error: ' + e.message, true));
-$('join-btn').onclick          = () => joinWithOffer().catch(e => addNote('join error: ' + e.message, true));
-$('accept-answer-btn').onclick = () => acceptAnswer().catch(e => addNote('connect error: ' + e.message, true));
+$('create-invite-btn').onclick = createInvite;
+$('join-btn').onclick          = joinWithOffer;
+$('accept-answer-btn').onclick = acceptAnswer;
+$('be-host-btn').onclick       = () => { location.hash = ''; location.reload(); };
 $('run-btn').onclick           = run;
 syncRolePrompt();
+initFromHash();
 if (!navigator.gpu) setStatus('WebGPU not detected — open in Chrome/Edge 113+', 'error');
