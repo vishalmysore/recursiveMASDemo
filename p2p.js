@@ -19,7 +19,8 @@ const MODEL_LBL = 'RecursiveMAS-0.5B';
 const CUSTOM_MODEL = {
   model:    'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC',
   model_id: MODEL_ID,
-  model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm',
+  // ?v=N cache-buster — bump whenever the .wasm is rebuilt (WebLLM caches by URL).
+  model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
   vram_required_MB: 900,
 };
 const appConfig = () => ({

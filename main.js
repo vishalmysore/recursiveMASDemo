@@ -45,7 +45,10 @@ const CUSTOM_MODELS = [
     // Self-compiled model, published to Hugging Face (note the case: VishalMysore).
     model:    'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC',
     model_id: 'recursivemas-0.5b',
-    model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm',
+    // ?v=N is a cache-buster: WebLLM caches the model lib in Cache Storage keyed by
+    // this exact URL and never re-validates it. BUMP N whenever the .wasm is rebuilt,
+    // or stale libs (missing get_last_hidden) get served from cache forever.
+    model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
     vram_required_MB: 900,
     label: 'RecursiveMAS 0.5B', size: '~0.5 GB · custom', exposesLatent: true,
   },
