@@ -123,6 +123,16 @@ function applyLinkSeq(rt, flat, rows, dim) {
   return out;
 }
 
+// Accept either a full sequence { data, rows } or a bare pooled vector (back-compat
+// with main.js's single-browser demo) and normalize to { data, rows }.
+function asSeq(prefix, dim) {
+  if (!prefix) return null;
+  if (prefix.data && prefix.rows) return prefix.data.length === prefix.rows * dim ? prefix : null;
+  const data = prefix instanceof Float32Array ? prefix : (Array.isArray(prefix) ? Float32Array.from(prefix) : null);
+  if (!data || data.length === 0 || data.length % dim !== 0) return null;
+  return { data, rows: data.length / dim };
+}
+
 // Scale a pooled latent so its L2 norm matches the mean per-token norm of the prompt's
 // input embeddings. A pooled last-hidden vector has a far larger magnitude than a normal
 // input embedding, so injecting it raw is wildly out-of-distribution and derails the
@@ -218,13 +228,14 @@ export async function chainForward(rt, text, prefix) {
     const tokEmb = pipeline.getTokensEmbeddings(tokens);          // [seq, dim]
     const dim = tokEmb.shape[tokEmb.shape.length - 1];
     let all = tokEmb, total = tokens.length, injected = false;
-    if (prefix && prefix.data && prefix.rows && prefix.data.length === prefix.rows * dim) {
+    const pseq = asSeq(prefix, dim);
+    if (pseq) {
       try {
         // Map the incoming latent SEQUENCE into input-embedding space with the trained
         // RecursiveLink (R_out), per position; prepend the whole sequence to the prompt.
-        const linked = applyLinkSeq(rt, prefix.data, prefix.rows, dim);
-        const pre = latentTokens(rt, linked, prefix.rows, tokEmb.dtype);   // [rows, dim]
-        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + prefix.rows; injected = true;
+        const linked = applyLinkSeq(rt, pseq.data, pseq.rows, dim);
+        const pre = latentTokens(rt, linked, pseq.rows, tokEmb.dtype);   // [rows, dim]
+        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + pseq.rows; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] latent inject failed:', e?.message || e); }  // forward prompt only
     }
     all = all.view([1].concat(all.shape));                        // [1, total, dim]
@@ -286,11 +297,12 @@ export async function chainDecode(rt, text, prefix, opts = {}) {
     // decoded FROM the latent, not the prompt. The trained RecursiveLink (R_out) maps
     // each position into input-embedding space; without a link the raw sequence is
     // injected (the out-of-distribution, untrained case).
-    if (opts.inject && prefix && prefix.data && prefix.rows && prefix.data.length === prefix.rows * dim) {
+    const pseq = opts.inject ? asSeq(prefix, dim) : null;
+    if (pseq) {
       try {
-        const linked = applyLinkSeq(rt, prefix.data, prefix.rows, dim);
-        const pre = latentTokens(rt, linked, prefix.rows, tokEmb.dtype);
-        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + prefix.rows; injected = true;
+        const linked = applyLinkSeq(rt, pseq.data, pseq.rows, dim);
+        const pre = latentTokens(rt, linked, pseq.rows, tokEmb.dtype);
+        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + pseq.rows; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] decode inject failed:', e?.message || e); }
     }
     all = all.view([1].concat(all.shape));

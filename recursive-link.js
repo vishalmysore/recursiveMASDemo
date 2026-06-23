@@ -56,10 +56,35 @@ export class RecursiveLink {
   applySeq(hs) { return hs.map(h => this.apply(h)); }
 }
 
-/** Load recursivelink.json -> { hidden, links: RecursiveLink[] }. */
+// Decode one IEEE-754 half (f16 bit pattern) → JS number.
+function f16to32(h) {
+  const s = (h & 0x8000) ? -1 : 1, e = (h & 0x7c00) >> 10, f = h & 0x03ff;
+  if (e === 0) return s * f * 5.9604644775390625e-8;
+  if (e === 0x1f) return f ? NaN : s * Infinity;
+  return s * (1 + f / 1024) * Math.pow(2, e - 15);
+}
+// base64 of little-endian f16 bytes → Float32Array.
+function f16b64(b64) {
+  const s = atob(b64), bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  const u16 = new Uint16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 1);
+  const out = new Float32Array(u16.length);
+  for (let i = 0; i < u16.length; i++) out[i] = f16to32(u16[i]);
+  return out;
+}
+const reshape = (flat, rows, cols) => { const W = new Array(rows); for (let r = 0; r < rows; r++) W[r] = flat.subarray(r * cols, (r + 1) * cols); return W; };
+
+/** Load recursivelink.json (compact base64-f16 or legacy float arrays)
+ *  -> { hidden, links: RecursiveLink[] }. */
 export async function loadRecursiveLinks(url) {
   const j = await (await fetch(url)).json();
-  return { hidden: j.hidden, links: j.links.map(l => new RecursiveLink(l)) };
+  const H = j.hidden, B = j.bottleneck;
+  const dec = (l) => j.fmt === 'f16b64'
+    ? { w1: reshape(f16b64(l.w1), B, H), b1: f16b64(l.b1),
+        w2: reshape(f16b64(l.w2), H, B), b2: f16b64(l.b2),
+        w3: l.w3 ? reshape(f16b64(l.w3), H, H) : undefined, scale: l.scale }
+    : l;   // legacy: w1/b1/w2/b2 already float arrays
+  return { hidden: H, links: j.links.map(l => new RecursiveLink(dec(l))) };
 }
 
 /* ──────────────────────────────────────────────────────────────────────────────

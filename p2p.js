@@ -25,10 +25,10 @@ const CUSTOM_MODEL = {
   vram_required_MB: 900,
   // Trained RecursiveLink — maps the latent sequence into the model's input-embedding
   // space so the vector-only decode is coherent. Produced by recursiveMASWebLLM's
-  // train_recursivelink.py. NOTE: GitHub Release assets are NOT CORS-enabled, so the
-  // browser can't fetch them — host on Hugging Face (same repo as the model, CORS-OK).
-  // If it fails to load, the inject paths fall back to the raw latent.
-  recursiveLink: 'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/recursivelink.json',
+  // train_recursivelink.py, re-encoded as compact base64-f16 (~2.4 MB) and served
+  // same-origin from public/ (no CORS, no external host). Falls back to the raw latent
+  // if it fails to load.
+  recursiveLink: 'recursivelink.min.json',
 };
 const appConfig = () => ({
   ...webllm.prebuiltAppConfig,
