@@ -79,7 +79,7 @@ function addMsg(emoji, role, kind) {
 }
 function addProof(msg, info) {
   const p = [];
-  if (info.decoded) { p.push('<span class="lp-ok">decoded ← injected latent</span>'); if (info.nTokens != null) p.push(`${info.nTokens} tok`); }
+  if (info.decoded) { p.push(`<span class="lp-ok">decoded${info.injected ? ' ← injected latent' : ' (prompt-conditioned)'}</span>`); if (info.nTokens != null) p.push(`${info.nTokens} tok`); }
   else {
     p.push('<span class="lp-ok">get_last_hidden</span>');
     if (info.shape) p.push(`→ [${info.shape.join('×')}] ${esc(info.dtype || '')}`);
@@ -287,7 +287,7 @@ async function handleHop(from, { seq, vec, task, rounds }) {
       const res = await chainDecode(rt, prompt, prefix, { system: myPrompt(), user: userMsg, maxTokens: MAX_DECODE, temperature: TEMP, onToken: d => { body.textContent += d; } });
       if (!res.ok) { addNote(`decode failed (${res.stage}): ${res.error}`, true); pm.broadcast({ type: 'note', text: 'decode failed' }); return; }
       if (!body.textContent) body.textContent = res.text || '(no output)';
-      addProof(msg, { decoded: true, nTokens: res.nTokens });
+      addProof(msg, { decoded: true, injected: res.injected, nTokens: res.nTokens });
       pm.broadcast({ type: 'final', text: res.text, fromRole: ROLE_NAME[myRoleKey()] });
     } else {
       const msg = addMsg('🧬', `${ROLE_NAME[myRoleKey()]} · latent only`, 'latent');

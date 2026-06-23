@@ -168,7 +168,15 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
   const { pipeline, tvm, realPrefill, realDecode } = rt;
   const stopTokens = (rt.stopTokens && rt.stopTokens.length ? rt.stopTokens : pipeline.stopTokens) || [];
   const maxTokens = opts.maxTokens || 256;
-  const genConfig = { temperature: opts.temperature ?? 0.6, top_p: opts.top_p ?? 0.95 };
+  // Repetition penalty is essential here. web-llm's sampler damps repeats by reading
+  // pipeline.appearedTokensFreq — but that map is maintained by the NORMAL decode loop,
+  // not ours. Without feeding it (see below) a small model collapses into degenerate
+  // "35 35 35 …" loops. We pass an explicit penalty and keep the frequency map updated.
+  const genConfig = {
+    temperature: opts.temperature ?? 0.6,
+    top_p: opts.top_p ?? 0.95,
+    repetition_penalty: opts.repetition_penalty ?? 1.3,
+  };
   // Prefer the model's real chat template (keeps the final answer coherent); fall
   // back to the raw text if a system/user split wasn't supplied or the template is
   // unreachable.
@@ -203,6 +211,9 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
     logits = tvm.detachFromCurrentScope(ret.get ? ret.get(0) : ret);
     tvm.endScope();
 
+    // Reset the per-generation token-frequency map the sampler penalises against.
+    try { pipeline.appearedTokensFreq?.clear?.(); } catch { /* ignore */ }
+
     // 2. Autoregressive sampling loop (reuses WebLLM's sampler).
     for (let step = 0; step < maxTokens; step++) {
       if (opts.isStopped && opts.isStopped()) break;
@@ -210,6 +221,9 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
       try { logits.dispose && logits.dispose(); } catch { /* ignore */ }
       if (stopTokens.includes(tok)) break;
       out.push(tok);
+      // Feed the sampler's repetition-penalty bookkeeping (the normal pipeline loop
+      // does this); without it appearedTokensFreq stays empty and penalty is a no-op.
+      try { const f = pipeline.appearedTokensFreq?.get?.(tok); pipeline.appearedTokensFreq?.set?.(tok, (f || 0) + 1); } catch { /* ignore */ }
       try {
         const full = pipeline.tokenizer.decode(Int32Array.from(out));
         const piece = full.slice(emitted.length); emitted = full;
