@@ -24,7 +24,37 @@
    as { ok:false, error, stage } so the caller can fall back to the text path.
    ════════════════════════════════════════════════════════════════════════════ */
 
-import { ndToFloat32 } from './latent-core.js';
+import { ndToFloat32, f16to32 } from './latent-core.js';
+
+// ── Full-sequence latent transport ────────────────────────────────────────────────
+// We send the WHOLE last-hidden sequence (not a mean-pooled vector) so the latent
+// carries per-token detail and the trained RecursiveLink can't collapse to a constant.
+// Pack it compactly so it fits in one WebRTC message: keep the last MAX_LATENT_ROWS
+// positions, f32 → f16 → deflate-raw → base64 (≈6× smaller than a JSON float array).
+const MAX_LATENT_ROWS = 64;
+const _b64 = (bytes) => { let s = ''; const C = 8192; for (let i = 0; i < bytes.length; i += C) s += String.fromCharCode.apply(null, bytes.subarray(i, i + C)); return btoa(s); };
+const _unb64 = (b64) => { const s = atob(b64); const a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; };
+
+export async function encodeLatentSeq(flat, rows, dim) {
+  let r = rows, off = 0;
+  if (rows > MAX_LATENT_ROWS) { off = (rows - MAX_LATENT_ROWS) * dim; r = MAX_LATENT_ROWS; }
+  const n = r * dim;
+  const u16 = new Uint16Array(n);
+  for (let i = 0; i < n; i++) u16[i] = f32to16(flat[off + i]);
+  const cs = new CompressionStream('deflate-raw');
+  const w = cs.writable.getWriter(); w.write(new Uint8Array(u16.buffer)); w.close();
+  const buf = new Uint8Array(await new Response(cs.readable).arrayBuffer());
+  return { b64: _b64(buf), rows: r, dim };
+}
+export async function decodeLatentSeq(b64, rows, dim) {
+  const ds = new DecompressionStream('deflate-raw');
+  const w = ds.writable.getWriter(); w.write(_unb64(b64)); w.close();
+  const buf = await new Response(ds.readable).arrayBuffer();
+  const u16 = new Uint16Array(buf);
+  const out = new Float32Array(rows * dim);
+  for (let i = 0; i < out.length; i++) out[i] = f16to32(u16[i]);
+  return out;
+}
 
 // ── float32 → float16 (round-to-nearest-even), for uploading the latent token ──
 const _f32 = new Float32Array(1);
@@ -67,6 +97,30 @@ function latentToken(rt, vec, dtype) {
     return nd;
   }
   return tvm.empty([1, dim], dtype || 'float32', pipeline.device).copyFrom(vec);
+}
+
+// Build a [rows, dim] embedding tensor on-device from a flat CPU latent sequence.
+function latentTokens(rt, flat, rows, dtype) {
+  const { tvm, pipeline } = rt;
+  const dim = flat.length / rows;
+  if (isF16(dtype)) {
+    const u16 = new Uint16Array(rows * dim);
+    for (let i = 0; i < rows * dim; i++) u16[i] = f32to16(flat[i]);
+    const nd = tvm.empty([rows, dim], 'float16', pipeline.device);
+    nd.copyFromRawBytes(new Uint8Array(u16.buffer));
+    return nd;
+  }
+  return tvm.empty([rows, dim], dtype || 'float32', pipeline.device).copyFrom(flat);
+}
+
+// Map an incoming latent sequence through the trained RecursiveLink (R_out), per
+// position. Without a link, returns the raw sequence (out-of-distribution — the
+// untrained case). flat is [rows*dim]; returns a new [rows*dim] Float32Array.
+function applyLinkSeq(rt, flat, rows, dim) {
+  if (!(rt.link && typeof rt.link.apply === 'function')) return flat;
+  const out = new Float32Array(rows * dim);
+  for (let r = 0; r < rows; r++) out.set(rt.link.apply(flat.subarray(r * dim, (r + 1) * dim)), r * dim);
+  return out;
 }
 
 // Scale a pooled latent so its L2 norm matches the mean per-token norm of the prompt's
@@ -150,7 +204,8 @@ export function formatChatPrompt(rt, system, user) {
 }
 
 // ── Intermediate agent: latent in → latent out, never decodes text ─────────────
-export async function chainForward(rt, text, prefixVec) {
+// `prefix` is the incoming latent SEQUENCE { data: Float32Array[rows*dim], rows } or null.
+export async function chainForward(rt, text, prefix) {
   if (!rt?.ok) return { ok: false, error: rt?.reason || 'no runtime', stage: 'runtime' };
   const { pipeline, tvm, fGLH } = rt;
   let tokens;
@@ -163,14 +218,13 @@ export async function chainForward(rt, text, prefixVec) {
     const tokEmb = pipeline.getTokensEmbeddings(tokens);          // [seq, dim]
     const dim = tokEmb.shape[tokEmb.shape.length - 1];
     let all = tokEmb, total = tokens.length, injected = false;
-    if (prefixVec && prefixVec.length === dim) {
+    if (prefix && prefix.data && prefix.rows && prefix.data.length === prefix.rows * dim) {
       try {
-        // Map the latent into input-embedding space with the trained RecursiveLink
-        // (R_out) when one is loaded; otherwise inject the raw vector (today's behavior).
-        const inj = (rt.link && typeof rt.link.apply === 'function')
-          ? Float32Array.from(rt.link.apply(prefixVec)) : prefixVec;
-        const pre = latentToken(rt, inj, tokEmb.dtype);          // [1, dim]
-        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
+        // Map the incoming latent SEQUENCE into input-embedding space with the trained
+        // RecursiveLink (R_out), per position; prepend the whole sequence to the prompt.
+        const linked = applyLinkSeq(rt, prefix.data, prefix.rows, dim);
+        const pre = latentTokens(rt, linked, prefix.rows, tokEmb.dtype);   // [rows, dim]
+        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + prefix.rows; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] latent inject failed:', e?.message || e); }  // forward prompt only
     }
     all = all.view([1].concat(all.shape));                        // [1, total, dim]
@@ -182,10 +236,10 @@ export async function chainForward(rt, text, prefixVec) {
     const cpu = tvm.empty(shape, dtype, tvm.cpu());
     cpu.copyFrom(hidden);
     await pipeline.device.sync();
-    const flat = ndToFloat32(cpu);   // toArray, or decode f16 raw bytes
+    const flat = ndToFloat32(cpu);   // full [seq*dim] hidden sequence
     tvm.endScope();
-    const { vec, norm } = poolHidden(flat, seq, d);
-    return { ok: true, shape, dtype, dim: d, seq, pooled: vec, norm, injected };
+    const { vec, norm } = poolHidden(flat, seq, d);   // pooled only for the proof badge
+    return { ok: true, shape, dtype, dim: d, seq, rows: seq, data: flat, pooled: vec, norm, injected };
   } catch (e) {
     try { tvm.endScope(); } catch { /* ignore */ }
     return { ok: false, error: e?.message || String(e), stage: 'forward' };
@@ -194,8 +248,9 @@ export async function chainForward(rt, text, prefixVec) {
   }
 }
 
-// ── Final agent: seed with the accumulated latent, then decode text for real ───
-export async function chainDecode(rt, text, prefixVec, opts = {}) {
+// ── Final agent: seed with the accumulated latent SEQUENCE, then decode text ───
+// `prefix` is the incoming latent sequence { data: Float32Array[rows*dim], rows } or null.
+export async function chainDecode(rt, text, prefix, opts = {}) {
   if (!rt?.ok) return { ok: false, error: rt?.reason || 'no runtime', stage: 'runtime' };
   const { pipeline, tvm, realPrefill, realDecode } = rt;
   const stopTokens = (rt.stopTokens && rt.stopTokens.length ? rt.stopTokens : pipeline.stopTokens) || [];
@@ -227,22 +282,15 @@ export async function chainDecode(rt, text, prefixVec, opts = {}) {
     const tokEmb = pipeline.getTokensEmbeddings(tokens);
     dim = tokEmb.shape[tokEmb.shape.length - 1];
     let all = tokEmb, total = tokens.length;
-    // Seed the decoder with the shared latent (opts.inject) so the answer is decoded
-    // FROM the vector, not from the prompt. With R_out=identity this is the untrained
-    // edge: we calibrate the latent's magnitude to the prompt-embedding scale so the
-    // injected "thought token" is at least in-distribution by norm (a pooled last-hidden
-    // is far larger than an input embedding). Coherence still ultimately needs a trained
-    // RecursiveLink; this just gives the latent its best chance of decoding to something.
-    if (opts.inject && prefixVec && prefixVec.length === dim) {
+    // Seed the decoder with the shared latent SEQUENCE (opts.inject) so the answer is
+    // decoded FROM the latent, not the prompt. The trained RecursiveLink (R_out) maps
+    // each position into input-embedding space; without a link the raw sequence is
+    // injected (the out-of-distribution, untrained case).
+    if (opts.inject && prefix && prefix.data && prefix.rows && prefix.data.length === prefix.rows * dim) {
       try {
-        // Trained RecursiveLink (R_out) maps the latent into input-embedding space;
-        // without one, fall back to magnitude calibration (better than raw, not as
-        // good as a trained link).
-        const inj = (rt.link && typeof rt.link.apply === 'function')
-          ? Float32Array.from(rt.link.apply(prefixVec))
-          : await calibrateLatentNorm(rt, prefixVec, tokEmb, dim, tokens.length);
-        const pre = latentToken(rt, inj, tokEmb.dtype);
-        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + 1; injected = true;
+        const linked = applyLinkSeq(rt, prefix.data, prefix.rows, dim);
+        const pre = latentTokens(rt, linked, prefix.rows, tokEmb.dtype);
+        all = tvm.concatEmbeddings([pre, tokEmb]); total = tokens.length + prefix.rows; injected = true;
       } catch (e) { all = tokEmb; total = tokens.length; console.warn('[chain] decode inject failed:', e?.message || e); }
     }
     all = all.view([1].concat(all.shape));

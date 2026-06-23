@@ -10,7 +10,7 @@
    ════════════════════════════════════════════════════════════════════════════ */
 import * as webllm from '@mlc-ai/web-llm';
 import { getLatentRuntime, cosine } from './latent-core.js';
-import { chainForward, chainDecode } from './latent-chain.js';
+import { chainForward, chainDecode, encodeLatentSeq, decodeLatentSeq } from './latent-chain.js';
 import { loadRecursiveLinks } from './recursive-link.js';
 import { PeerManager } from './peer-manager.js';
 
@@ -23,11 +23,12 @@ const CUSTOM_MODEL = {
   // ?v=N cache-buster — bump whenever the .wasm is rebuilt (WebLLM caches by URL).
   model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
   vram_required_MB: 900,
-  // Trained RecursiveLink — maps the latent into the model's input-embedding space so
-  // the vector-only decode is coherent. Produce recursivelink.json with the
-  // recursiveMASWebLLM repo's train_recursivelink.py, publish it, then set its URL here.
-  // Until set, the inject paths fall back to magnitude calibration.
-  // recursiveLink: 'https://github.com/vishalmysore/recursiveMASWebLLM/releases/download/model-RecursiveMAS-0.5B/recursivelink.json',
+  // Trained RecursiveLink — maps the latent sequence into the model's input-embedding
+  // space so the vector-only decode is coherent. Produced by recursiveMASWebLLM's
+  // train_recursivelink.py. NOTE: GitHub Release assets are NOT CORS-enabled, so the
+  // browser can't fetch them — host on Hugging Face (same repo as the model, CORS-OK).
+  // If it fails to load, the inject paths fall back to the raw latent.
+  recursiveLink: 'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/recursivelink.json',
 };
 const appConfig = () => ({
   ...webllm.prebuiltAppConfig,
@@ -289,23 +290,23 @@ function addFinal(role, text) {
   m.querySelector('.msg-body').textContent = text || '(no output)';
 }
 
-async function handleHop(from, { seq, vec, task, rounds }) {
+async function handleHop(from, { seq, b64, rows, dim, task, rounds }) {
   if (busy) return; busy = true;
   try {
     const c = seq + 1;                       // this is the c-th computation in the chain
     const isFinal = c === 2 * rounds;
-    const prefix = Float32Array.from(vec);
+    const prefix = { data: await decodeLatentSeq(b64, rows, dim), rows };   // full latent sequence
     // Role only — NO task text. The task entered latent space once (the host's first
-    // forward encoded it); from then on it travels solely as the 896-d vector. Re-feeding
+    // forward encoded it); from then on it travels solely as the latent sequence. Re-feeding
     // the task as text here would mean the answer comes from the prompt, not the latent.
     const prompt = `${myPrompt()}\n\nBuild on the incoming latent state from the other agent.`;
-    addWire(`◀ received latent from ${from} (hop ${seq}/${2 * rounds}) — ${vec.length}-d vector`);
+    addWire(`◀ received latent from ${from} (hop ${seq}/${2 * rounds}) — ${rows}×${dim} sequence`);
 
     if (isFinal) {
       const msg = addMsg('🧩', `${ROLE_NAME[myRoleKey()]} · decoding shared latent`, 'decode');
       const body = msg.querySelector('.msg-body');
       // True to the RecursiveMAS premise: the final answer is decoded FROM the shared
-      // latent vector (inject = true), with no task text in the prompt — this is the
+      // latent sequence (inject = true), with no task text in the prompt — this is the
       // single place a latent becomes text. Nothing on the wire was ever text.
       const userMsg = 'Decode the team\'s shared latent state into the final answer.';
       const res = await chainDecode(rt, prompt, prefix, {
@@ -320,10 +321,11 @@ async function handleHop(from, { seq, vec, task, rounds }) {
       const msg = addMsg('🧬', `${ROLE_NAME[myRoleKey()]} · latent only`, 'latent');
       msg.querySelector('.msg-body').textContent = '⟶ latent only (no text decode)';
       const res = await chainForward(rt, prompt, prefix);
-      if (!res.ok || !res.pooled) { addNote(`latent forward failed (${res.stage || 'pool'}): ${res.error || 'no vector'}`, true); pm.broadcast({ type: 'note', text: 'latent forward failed' }); return; }
+      if (!res.ok || !res.data) { addNote(`latent forward failed (${res.stage || 'pool'}): ${res.error || 'no vector'}`, true); pm.broadcast({ type: 'note', text: 'latent forward failed' }); return; }
       addProof(msg, { shape: res.shape, dtype: res.dtype, norm: res.norm, injected: res.injected, cos: prevVec ? cosine(prevVec, res.pooled) : null });
       prevVec = res.pooled;
-      pm.broadcast({ type: 'latent-hop', seq: c, vec: Array.from(res.pooled), task, rounds });
+      const enc = await encodeLatentSeq(res.data, res.rows, res.dim);
+      pm.broadcast({ type: 'latent-hop', seq: c, b64: enc.b64, rows: enc.rows, dim: enc.dim, task, rounds });
     }
   } catch (e) { addNote('hop error: ' + (e?.message || e), true); }
   finally { busy = false; }
@@ -344,11 +346,12 @@ async function run() {
     const msg = addMsg('🧬', `${ROLE_NAME[myRoleKey()]} · latent only`, 'latent');
     msg.querySelector('.msg-body').textContent = '⟶ latent only (no text decode)';
     const res = await chainForward(rt, `${myPrompt()}\n\nTASK: ${task}`, null);
-    if (!res.ok || !res.pooled) { addNote(`latent forward failed (${res.stage || 'pool'}): ${res.error || 'no vector'}`, true); return; }
+    if (!res.ok || !res.data) { addNote(`latent forward failed (${res.stage || 'pool'}): ${res.error || 'no vector'}`, true); return; }
     addProof(msg, { shape: res.shape, dtype: res.dtype, norm: res.norm, injected: false });
     prevVec = res.pooled;
     addWire(`▶ sending latent to peer (hop 1/${2 * rounds})`);
-    pm.broadcast({ type: 'latent-hop', seq: 1, vec: Array.from(res.pooled), task, rounds });
+    const enc = await encodeLatentSeq(res.data, res.rows, res.dim);
+    pm.broadcast({ type: 'latent-hop', seq: 1, b64: enc.b64, rows: enc.rows, dim: enc.dim, task, rounds });
   } catch (e) { addNote('run error: ' + (e?.message || e), true); }
   finally { busy = false; }
 }
