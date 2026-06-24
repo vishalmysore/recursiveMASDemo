@@ -56,6 +56,19 @@ const CUSTOM_MODELS = [
     // fall back to the raw latent.
     recursiveLink: 'recursivelink.min.json',
   },
+  {
+    // TinyLlama-1.1B build (arch llama, hidden=2048) — its own RecursiveLink, since the
+    // link is dimension-matched to the model (896-d for 0.5B vs 2048-d here).
+    model:    'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC',
+    model_id: 'recursivemas-tinyllama-1.1b',
+    model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f16_1-webgpu.wasm?v=1',
+    vram_required_MB: 1300,
+    label: 'RecursiveMAS TinyLlama 1.1B', size: '~0.6 GB · custom', exposesLatent: true,
+    // Trained on TinyLlama, re-encoded to compact base64-f16 (~5.6 MB) and served
+    // same-origin. The full 47 MB float JSON also lives at the HF repo root + the
+    // GitHub Release (recursivelink.json) if you'd rather load it from there.
+    recursiveLink: 'recursivelink-tinyllama.min.json',
+  },
 ];
 
 // Merge our custom records into WebLLM's prebuilt app config (so both prebuilt and
@@ -79,14 +92,18 @@ CUSTOM_MODELS.forEach(c => MODELS.push({
 // The link math runs in-browser (recursive-link.js); the low-level hidden-state loop
 // that would consume it is documented there and in model-build/ (the remaining piece).
 let recursiveLinks = null;
+let recursiveLinksFor = null;   // model_id the loaded link belongs to (reload on model switch)
 async function maybeLoadLink() {
-  const m = MODELS.find(x => x.id === getModelId());
-  if (m?.exposesLatent && m.recursiveLink && !recursiveLinks) {
-    try {
-      recursiveLinks = await loadRecursiveLinks(m.recursiveLink);
-      console.info(`[RecursiveLink] loaded ${recursiveLinks.links.length} link(s), hidden=${recursiveLinks.hidden}`);
-    } catch (e) { console.warn('[RecursiveLink] load failed:', e.message); }
-  }
+  const id = getModelId();
+  const m = MODELS.find(x => x.id === id);
+  if (!(m?.exposesLatent && m.recursiveLink)) return;
+  if (recursiveLinksFor === id && recursiveLinks) return;   // already loaded for this model
+  recursiveLinks = null; recursiveLinksFor = null;
+  try {
+    recursiveLinks = await loadRecursiveLinks(m.recursiveLink);
+    recursiveLinksFor = id;
+    console.info(`[RecursiveLink] loaded ${recursiveLinks.links.length} link(s) for ${id}, hidden=${recursiveLinks.hidden}`);
+  } catch (e) { console.warn('[RecursiveLink] load failed:', e.message); }
 }
 
 // ── Collaboration patterns (from the paper, Section 2 + Table 1) ──────────────

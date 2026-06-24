@@ -45,16 +45,24 @@
 
     <section class="card">
       <p class="honest">
-        ⚠️ <strong>Both peers must run the same RecursiveMAS-0.5B model</strong> — that's what makes the 896-d
-        latent space shared (outer RecursiveLink = identity). The two agents differ only by <em>role prompt</em>
-        (e.g. Travel vs Hotel). Each peer downloads the model once (WebGPU). Latents (≈3.5&nbsp;KB vectors) are sent
-        over a WebRTC data channel; only the final hop decodes to text.
+        ⚠️ <strong>Both peers must run the same model</strong> — that's what makes the latent space shared
+        (896-d for RecursiveMAS-0.5B, 2048-d for TinyLlama-1.1B; outer RecursiveLink = identity). The host picks
+        the model and the invite link locks the joiner to it. The two agents differ only by <em>role prompt</em>
+        (e.g. Travel vs Hotel). Each peer downloads the model once (WebGPU). Latents are sent over a WebRTC data
+        channel; only the final hop decodes to text.
       </p>
     </section>
 
     <!-- 1 · Your agent -->
     <section class="card">
       <div class="step-label">1 · YOUR AGENT</div>
+      <div class="model-select" style="margin-bottom:.55rem">
+        <span class="muted" style="font-size:.8rem;display:block;margin-bottom:.25rem">Backbone (both peers must match):</span>
+        <div class="role-select">
+          <label><input type="radio" name="p2p-model" value="recursivemas-0.5b" checked /> 🧠 RecursiveMAS-0.5B</label>
+          <label><input type="radio" name="p2p-model" value="recursivemas-tinyllama-1.1b" /> 🦙 TinyLlama 1.1B</label>
+        </div>
+      </div>
       <div class="role-select">
         <label><input type="radio" name="role" value="travel" checked /> 🧳 Travel agent</label>
         <label><input type="radio" name="role" value="hotel" /> 🏨 Hotel agent</label>
@@ -63,7 +71,7 @@
       <input id="agent-name" class="role-prompt" style="min-height:0" value="" placeholder="Your agent name (e.g. Vishal-Travel)" />
       <textarea id="role-prompt" class="role-prompt" spellcheck="false"></textarea>
       <div class="run-row" style="margin-top:.6rem">
-        <button id="load-btn" class="btn-secondary">⤓ Load RecursiveMAS-0.5B</button>
+        <button id="load-btn" class="btn-secondary">⤓ Load model</button>
         <span id="model-status" class="status-badge status-idle">idle</span>
       </div>
       <div id="model-hint" class="muted" style="font-size:.78rem;margin-top:.4rem"></div>
@@ -81,7 +89,7 @@
         <p class="muted">Start a session and send the invite link to your friend — WhatsApp, email, anything.
           They open it, send back one short code, and you're connected.</p>
         <button id="create-invite-btn" class="btn-primary" disabled>🔗 Create invite link</button>
-        <p id="invite-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 before creating an invite.</p>
+        <p id="invite-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the model in step 1 before creating an invite.</p>
 
         <div id="invite-ready" style="display:none">
           <p class="connect-step"><strong>①</strong> Send this link to your friend:</p>
@@ -104,7 +112,7 @@
         <p class="invited-banner">🎉 You've been invited to collaborate.
           <span id="invited-role-hint" class="muted"></span></p>
         <button id="join-btn" class="btn-primary" disabled>Generate my answer code</button>
-        <p id="join-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 before generating your answer code.</p>
+        <p id="join-gate-hint" class="muted run-hint-warn" style="font-size:.78rem;margin-top:.5rem">⚠️ Load the model in step 1 before generating your answer code.</p>
 
         <div id="answer-ready" style="display:none">
           <p class="connect-step">Send this <em>answer code</em> back to the host to finish connecting:</p>
@@ -135,7 +143,7 @@
         </label>
         <button id="run-btn" class="btn-primary" disabled>▶ Run latent collaboration</button>
       </div>
-      <p id="run-hint" class="muted run-hint-warn" style="font-size:.8rem">⚠️ Load the RecursiveMAS-0.5B model in step 1 first.</p>
+      <p id="run-hint" class="muted run-hint-warn" style="font-size:.8rem">⚠️ Load the model in step 1 first.</p>
     </section>
 
     <!-- Transcript -->

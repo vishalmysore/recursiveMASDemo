@@ -30,10 +30,11 @@ function waitForICE(pc) {
 export class PeerManager {
   peers = new Map(); // key → {pc, channel, name, persona, modelLabel, state}
 
-  constructor({ myName, myPersona, myModelLabel, onPeerJoin, onPeerLeave, onMessage, onPeerState }) {
+  constructor({ myName, myPersona, myModelLabel, myModelId, onPeerJoin, onPeerLeave, onMessage, onPeerState }) {
     this.myName        = myName;
     this.myPersona     = myPersona;
     this.myModelLabel  = myModelLabel;
+    this.myModelId     = myModelId;
     this.onPeerJoin    = onPeerJoin;
     this.onPeerLeave   = onPeerLeave;
     this.onMessage     = onMessage;
@@ -84,7 +85,7 @@ export class PeerManager {
 
   _makePC(key) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-    this.peers.set(key, { pc, channel: null, name: key, persona: null, modelLabel: null, state: 'connecting' });
+    this.peers.set(key, { pc, channel: null, name: key, persona: null, modelLabel: null, modelId: null, state: 'connecting' });
 
     pc.onconnectionstatechange = () => {
       let foundKey = null, foundPeer = null;
@@ -112,6 +113,7 @@ export class PeerManager {
       name: this.myName,
       persona: this.myPersona,
       modelLabel: this.myModelLabel,
+      modelId: this.myModelId,
     }));
 
     ch.onmessage = e => {
@@ -129,6 +131,7 @@ export class PeerManager {
         if (peer) {
           peer.persona     = msg.persona;
           peer.modelLabel  = msg.modelLabel;
+          peer.modelId     = msg.modelId;
           peer.state       = 'connected';
         }
         this.onPeerJoin?.(realName, msg);

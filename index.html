@@ -26,9 +26,9 @@
       </p>
       <p class="honest">
         ⚠️ <strong>Honest note.</strong> Stock browser LLMs only expose <code>input_ids → logits</code>. This demo
-        instead runs a <strong>custom-compiled RecursiveMAS-0.5B</strong> whose graph adds <code>get_last_hidden</code>,
+        instead runs a <strong>custom-compiled RecursiveMAS backbone</strong> whose graph adds <code>get_last_hidden</code>,
         so every intermediate agent computes a <em>real</em> last-layer hidden state (the paper's latent thought)
-        on-device — each step prints its <code>[1×seq×896]</code> tensor + the latent-space routing cosine as proof.
+        on-device — each step prints its <code>[1×seq×hidden]</code> tensor + the latent-space routing cosine as proof.
         The recursive loop, round structure, and efficiency mechanism all match the paper; only the final agent
         decodes text. <strong>Remaining gap:</strong> the next agent is still conditioned on the short text thought —
         full vector-only conditioning (and trained RecursiveLink weights) is the next step. Run it against the
@@ -90,9 +90,9 @@
       <div class="setup-grid">
         <div class="setup-col">
           <div class="step-label">2 · AGENT BACKBONE MODEL</div>
-          <p class="muted">This demo runs only the custom <strong>RecursiveMAS-0.5B</strong> backbone — the
-            self-compiled model whose graph exposes <code>get_last_hidden</code>, so agents exchange a
-            <em>real</em> last-layer hidden state (latent), not just compressed text.</p>
+          <p class="muted">Pick a custom <strong>RecursiveMAS</strong> backbone — self-compiled models whose graph
+            exposes <code>get_last_hidden</code>, so agents exchange a <em>real</em> last-layer hidden state (latent),
+            not just compressed text. Each backbone loads its own trained RecursiveLink.</p>
           <div class="model-cards" id="model-cards">
             <!-- The single RecursiveMAS-0.5B card is injected by renderCustomModelCards() in main.js. -->
           </div>

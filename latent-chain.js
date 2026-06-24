@@ -10,9 +10,10 @@
 
      • chainForward()  — intermediate agents. Builds input embeddings as a single
        injected latent token (the previous agent's pooled hidden, R_out = identity
-       since both spaces are 896-d for the same model) prepended to the agent's prompt
+       since the latent and embedding spaces share the model's hidden dim — 896-d for
+       RecursiveMAS-0.5B, 2048-d for TinyLlama-1.1B) prepended to the agent's prompt
        token embeddings, runs the custom `get_last_hidden` graph fn, pools the result
-       to one 896-d latent vector. NO sampling, NO text.
+       to one hidden-dim latent vector. NO sampling, NO text.
 
      • chainDecode()   — final agent. Same injected-latent seed, but uses the REAL
        prefill (LM head → logits) and then an autoregressive sampling loop reusing

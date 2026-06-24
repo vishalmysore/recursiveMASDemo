@@ -1,12 +1,13 @@
 /* ════════════════════════════════════════════════════════════════════════════
    p2p.js — RecursiveMAS over WebRTC.
 
-   Two browsers, each running the SAME custom RecursiveMAS-0.5B model with a different
-   role prompt. The host drives N latent rounds: agents alternate, each forwarding
-   through get_last_hidden over the OTHER agent's injected latent (a 896-d vector sent
-   across the WebRTC data channel) and never decoding text — until the final hop, where
-   one agent decodes the shared latent into the answer. Reuses latent-chain.js for the
-   on-device latent maths and peer-manager.js for transport.
+   Two browsers, each running the SAME custom RecursiveMAS model (0.5B or TinyLlama-1.1B;
+   the host picks and the invite link locks the joiner to it) with a different role prompt.
+   The host drives N latent rounds: agents alternate, each forwarding through
+   get_last_hidden over the OTHER agent's injected latent (a hidden-dim vector — 896-d for
+   0.5B, 2048-d for TinyLlama — sent across the WebRTC data channel) and never decoding
+   text — until the final hop, where one agent decodes the shared latent into the answer.
+   Reuses latent-chain.js for the on-device latent maths and peer-manager.js for transport.
    ════════════════════════════════════════════════════════════════════════════ */
 import * as webllm from '@mlc-ai/web-llm';
 import { getLatentRuntime, cosine } from './latent-core.js';
@@ -14,26 +15,63 @@ import { chainForward, chainDecode, encodeLatentSeq, decodeLatentSeq } from './l
 import { loadRecursiveLinks } from './recursive-link.js';
 import { PeerManager } from './peer-manager.js';
 
-// ── The one shared model (must match on both peers) ──────────────────────────────
-const MODEL_ID  = 'recursivemas-0.5b';
-const MODEL_LBL = 'RecursiveMAS-0.5B';
-const CUSTOM_MODEL = {
-  model:    'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC',
-  model_id: MODEL_ID,
-  // ?v=N cache-buster — bump whenever the .wasm is rebuilt (WebLLM caches by URL).
-  model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
-  vram_required_MB: 900,
-  // Trained RecursiveLink — maps the latent sequence into the model's input-embedding
-  // space so the vector-only decode is coherent. Produced by recursiveMASWebLLM's
-  // train_recursivelink.py, re-encoded as compact base64-f16 (~2.4 MB) and served
-  // same-origin from public/ (no CORS, no external host). Falls back to the raw latent
-  // if it fails to load.
-  recursiveLink: 'recursivelink.min.json',
+// ── Shared model registry (BOTH peers must run the SAME one) ─────────────────────
+// The latent space is model-specific — 896-d for 0.5B, 2048-d for TinyLlama — and the
+// RecursiveLink is dimension-matched to it, so a latent vector from one model is
+// meaningless to the other. The P2P flow therefore pins both peers to one model: the
+// host's choice is baked into the invite link and the joiner is locked to it.
+// Each recursiveLink is the compact base64-f16 form, served same-origin (no CORS).
+const MODELS = {
+  'recursivemas-0.5b': {
+    id: 'recursivemas-0.5b', label: 'RecursiveMAS-0.5B', dim: 896,
+    rec: {
+      model:    'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC',
+      model_id: 'recursivemas-0.5b',
+      // ?v=N cache-buster — bump whenever the .wasm is rebuilt (WebLLM caches by URL).
+      model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-0.5B-MLC/resolve/main/libs/RecursiveMAS-0.5B-q4f16_1-webgpu.wasm?v=2',
+      vram_required_MB: 900,
+      recursiveLink: 'recursivelink.min.json',
+    },
+  },
+  'recursivemas-tinyllama-1.1b': {
+    id: 'recursivemas-tinyllama-1.1b', label: 'RecursiveMAS TinyLlama 1.1B', dim: 2048,
+    rec: {
+      model:    'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC',
+      model_id: 'recursivemas-tinyllama-1.1b',
+      model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f16_1-webgpu.wasm?v=1',
+      vram_required_MB: 1300,
+      recursiveLink: 'recursivelink-tinyllama.min.json',
+    },
+  },
 };
+const DEFAULT_MODEL_ID = 'recursivemas-0.5b';
+let selectedModelId = DEFAULT_MODEL_ID;
+let modelLocked = false;          // joiner locked to host's model; host locks once loaded
+const curModel = () => MODELS[selectedModelId];
+const pickedModelId = () => document.querySelector('input[name=p2p-model]:checked')?.value || DEFAULT_MODEL_ID;
+
 const appConfig = () => ({
   ...webllm.prebuiltAppConfig,
-  model_list: [...webllm.prebuiltAppConfig.model_list, CUSTOM_MODEL],
+  model_list: [...webllm.prebuiltAppConfig.model_list, ...Object.values(MODELS).map(m => m.rec)],
 });
+
+// Reflect the selected model into the UI; lock it once a session is committed.
+function syncModelLabel() {
+  const lb = $('load-btn');
+  if (lb && !engine) lb.textContent = `⤓ Load ${curModel().label}`;
+}
+function lockModelPicker() {
+  modelLocked = true;
+  document.querySelectorAll('input[name=p2p-model]').forEach(r => { r.disabled = true; });
+}
+function applyModelSelection(id, { lock = false } = {}) {
+  if (MODELS[id]) selectedModelId = id;
+  const radio = document.querySelector(`input[name=p2p-model][value="${selectedModelId}"]`);
+  if (radio) radio.checked = true;
+  if (lock) lockModelPicker();
+  syncModelLabel();
+}
+const modelsMatch = () => !peerModelId || peerModelId === selectedModelId;
 
 const ROLE_PROMPTS = {
   travel: 'You are a Travel Planner agent. You design concise day-by-day itineraries — routes, transport, timing, and what to see. You collaborate with a Hotel agent who handles lodging. Be specific and brief.',
@@ -103,6 +141,7 @@ function addProof(msg, info) {
 // ── State ──────────────────────────────────────────────────────────────────────────
 let engine = null, rt = null, myReady = false;
 let pm = null, isHost = false, peerReady = false, prevVec = null, busy = false;
+let peerModelId = null;          // the connected peer's model id (from the hello handshake)
 
 function myRoleKey() { return document.querySelector('input[name=role]:checked')?.value || 'travel'; }
 function myPrompt()  { return $('role-prompt').value.trim() || ROLE_PROMPTS[myRoleKey()] || ROLE_PROMPTS.travel; }
@@ -125,13 +164,15 @@ function updateConnectBtns() {
 function updateRunBtn() {
   const btn = $('run-btn'), hint = $('run-hint');
   const connected = !!(pm && pm.getConnected().length > 0);
-  const ok = isHost && connected && myReady && peerReady;
+  const matched = modelsMatch();
+  const ok = isHost && connected && myReady && peerReady && matched;
   btn.disabled = !ok;
   // Spell out exactly what's still blocking the run, most-blocking first.
   let msg, warn = true;
-  if (!myReady)         msg = '⚠️ Load the RecursiveMAS-0.5B model first — use the “⤓ Load” button in step 1 above.';
+  if (!myReady)         msg = `⚠️ Load the ${curModel().label} model first — use the “⤓ Load” button in step 1 above.`;
   else if (!connected)  msg = isHost ? 'Create an invite link above and connect your peer to enable the run.'
                                      : 'Connect to the host above to join the collaboration.';
+  else if (!matched)    msg = `⚠️ Model mismatch — your peer is on ${MODELS[peerModelId]?.label || peerModelId}, you're on ${curModel().label}. Both must run the SAME model; reconnect with matching models.`;
   else if (!peerReady)  msg = '⏳ Waiting for the other agent to finish loading its model…';
   else if (!isHost)     msg = '✓ Connected. The host drives the run — ask them to click ▶.';
   else { msg = '✓ Both agents loaded and connected — click ▶ to run.'; warn = false; }
@@ -143,29 +184,31 @@ function updateRunBtn() {
 async function loadModel() {
   if (engine) return true;
   if (!navigator.gpu) { setStatus('WebGPU not available — use Chrome/Edge 113+', 'error'); return false; }
-  setStatus('Loading RecursiveMAS-0.5B (one-time download)…', 'loading');
+  const M = curModel();
+  lockModelPicker();           // a model is now committed for this session — can't switch
+  setStatus(`Loading ${M.label} (one-time download)…`, 'loading');
   try {
-    engine = await webllm.CreateMLCEngine(MODEL_ID, {
+    engine = await webllm.CreateMLCEngine(M.id, {
       appConfig: appConfig(),
       initProgressCallback: (p) => setStatus(p.text || `Loading… ${Math.round((p.progress||0)*100)}%`, 'loading'),
     });
   } catch (e) { setStatus('Load failed: ' + (e?.message || e), 'error'); return false; }
-  rt = getLatentRuntime(engine, MODEL_ID);
+  rt = getLatentRuntime(engine, M.id);
   if (!rt.ok) { setStatus('Latent runtime unavailable: ' + rt.reason, 'error'); return false; }
   // Load the trained RecursiveLink if one is published — it maps the latent into the
   // model's input-embedding space so the vector-only decode is coherent. Optional: if
   // it's absent or fails to load, the inject paths fall back to magnitude calibration.
   let linkNote = '';
-  if (CUSTOM_MODEL.recursiveLink) {
+  if (M.rec.recursiveLink) {
     try {
-      const { links } = await loadRecursiveLinks(CUSTOM_MODEL.recursiveLink);
+      const { links } = await loadRecursiveLinks(M.rec.recursiveLink);
       rt.link = links?.[0] || null;
       if (rt.link) linkNote = ' + RecursiveLink';
     } catch (e) { console.warn('[p2p] RecursiveLink load failed, using fallback:', e?.message || e); }
   }
   myReady = true;
-  setStatus(`Model ready · latent ✓${linkNote} — you can connect & collaborate`, 'ready');
-  if (pm) pm.broadcast({ type: 'ready' });
+  setStatus(`${M.label} ready · latent ✓${linkNote} — you can connect & collaborate`, 'ready');
+  if (pm) pm.broadcast({ type: 'ready', modelId: M.id });
   updateConnectBtns();
   updateRunBtn();
   return true;
@@ -175,15 +218,19 @@ async function loadModel() {
 function ensurePM() {
   if (pm) return pm;
   pm = new PeerManager({
-    myName: myName(), myPersona: myPrompt(), myModelLabel: MODEL_LBL,
+    myName: myName(), myPersona: myPrompt(), myModelLabel: curModel().label, myModelId: selectedModelId,
     onPeerJoin: (name, hello) => {
+      peerModelId = hello.modelId || null;
       addWire(`connected to ${name} — role: ${String(hello.persona || '').slice(0, 48)}…`);
       showConnected(name);
       renderPeers();
-      if (myReady) pm.broadcast({ type: 'ready' });
+      if (peerModelId && peerModelId !== selectedModelId) {
+        addNote(`model mismatch — ${name} is running ${MODELS[peerModelId]?.label || peerModelId}, you're on ${curModel().label}. Both peers must use the SAME model.`, true);
+      }
+      if (myReady) pm.broadcast({ type: 'ready', modelId: selectedModelId });
       updateRunBtn();
     },
-    onPeerLeave: (name) => { addWire(`${name} disconnected`); peerReady = false; renderPeers(); updateRunBtn(); },
+    onPeerLeave: (name) => { addWire(`${name} disconnected`); peerReady = false; peerModelId = null; renderPeers(); updateRunBtn(); },
     onPeerState: () => renderPeers(),
     onMessage: (from, msg) => onMessage(from, msg),
   });
@@ -217,6 +264,7 @@ async function createInvite() {
     const params = new URLSearchParams();
     params.set('offer', await encodeSDP(offer));
     params.set('role', myRoleKey());
+    params.set('model', selectedModelId);   // pin the joiner to the same model
     const url = `${location.origin}${location.pathname}#${params.toString()}`;
     $('invite-url').value = url;
     $('invite-ready').style.display = '';
@@ -263,6 +311,10 @@ async function initFromHash() {
   const params = new URLSearchParams(location.hash.replace(/^#/, ''));
   const offerToken = params.get('offer');
   if (!offerToken) return;
+  // Pin the joiner to the host's model BEFORE the async decode, so there's no window in
+  // which they could load a different one (the latent space must match exactly).
+  const hostModel = params.get('model');
+  if (hostModel && MODELS[hostModel]) applyModelSelection(hostModel, { lock: true });
   try {
     pendingOffer = await decodeSDP(offerToken);
   } catch { addNote('This invite link looks invalid or corrupted.', true); return; }
@@ -273,7 +325,8 @@ async function initFromHash() {
   $('connect-host').style.display = 'none';
   $('connect-join').style.display = '';
   $('invited-role-hint').textContent =
-    `Host is the ${ROLE_NAME[hostRole]} agent, so you're set up as the ${ROLE_NAME[myRole]} agent (change above if you like). Load the model, then generate your code.`;
+    `Host is the ${ROLE_NAME[hostRole]} agent, so you're set up as the ${ROLE_NAME[myRole]} agent (change above if you like). ` +
+    `The model is locked to the host's ${curModel().label} — load it, then generate your code.`;
 }
 
 // ── The latent protocol ──────────────────────────────────────────────────────────────
@@ -332,7 +385,9 @@ async function handleHop(from, { seq, b64, rows, dim, task, rounds }) {
 }
 
 async function run() {
-  if (busy) return; busy = true;
+  if (busy) return;
+  if (!modelsMatch()) { addNote(`refusing to run — peer is on a different model (${MODELS[peerModelId]?.label || peerModelId} vs ${curModel().label}).`, true); return; }
+  busy = true;
   try {
     const task = $('task').value.trim();
     const rounds = parseInt($('rounds').value, 10) || 1;
@@ -358,6 +413,11 @@ async function run() {
 
 // ── Wire up UI ──────────────────────────────────────────────────────────────────────
 document.querySelectorAll('input[name=role]').forEach(r => r.addEventListener('change', syncRolePrompt));
+document.querySelectorAll('input[name=p2p-model]').forEach(r => r.addEventListener('change', () => {
+  if (modelLocked || engine) { applyModelSelection(selectedModelId); return; }  // committed — can't switch
+  selectedModelId = pickedModelId();
+  syncModelLabel();
+}));
 $('load-btn').onclick          = loadModel;
 $('create-invite-btn').onclick = createInvite;
 $('join-btn').onclick          = joinWithOffer;
@@ -365,6 +425,7 @@ $('accept-answer-btn').onclick = acceptAnswer;
 $('be-host-btn').onclick       = () => { location.hash = ''; location.reload(); };
 $('run-btn').onclick           = run;
 syncRolePrompt();
+syncModelLabel();
 initFromHash();
 updateConnectBtns();
 updateRunBtn();
