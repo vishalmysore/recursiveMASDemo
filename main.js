@@ -362,8 +362,11 @@ async function ensureModel() {
   // Resolve the real latent runtime for latent-capable backbones (get_last_hidden).
   const m = MODELS.find(x => x.id === wanted);
   latentRT = m?.exposesLatent ? getLatentRuntime(engine, wanted) : { ok: false, reason: 'model not marked latent-capable' };
+  // Connect the trained RecursiveLink so chainForward/chainDecode actually apply it —
+  // without this the inject paths use the raw (out-of-distribution) latent → garbage.
+  if (latentRT.ok) { await maybeLoadLink(); latentRT.link = recursiveLinks?.links?.[0] || null; }
   console.info(latentRT.ok
-    ? '[latent] get_last_hidden runtime ready — agents will compute real last-layer hidden states'
+    ? `[latent] get_last_hidden runtime ready${latentRT.link ? ' + RecursiveLink' : ''} — agents compute real last-layer hidden states`
     : `[latent] real latent unavailable (${latentRT.reason}) — falling back to compressed-text thoughts`);
 
   progressWrap.style.display = 'none';
@@ -802,7 +805,7 @@ function addChainProof(msg, info) {
   } else {
     parts.push('<span class="lp-ok">get_last_hidden</span>');
     if (info.shape) parts.push(`→ [${info.shape.join('×')}] ${esc(info.dtype || '')}`);
-    parts.push(info.injected ? 'latent injected (R_out=I)' : 'no prefix (first hop)');
+    parts.push(info.injected ? 'latent injected (R_out)' : 'no prefix (first hop)');
     if (info.norm != null) parts.push(`‖h‖=${info.norm.toFixed(2)}`);
     if (info.cos != null) parts.push(`cos(prev)=${info.cos.toFixed(3)}`);
   }

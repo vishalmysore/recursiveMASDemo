@@ -93,7 +93,7 @@ function addProof(msg, info) {
   else {
     p.push('<span class="lp-ok">get_last_hidden</span>');
     if (info.shape) p.push(`→ [${info.shape.join('×')}] ${esc(info.dtype || '')}`);
-    p.push(info.injected ? 'latent injected (R_out=I)' : 'no prefix (first hop)');
+    p.push(info.injected ? 'latent injected (R_out)' : 'no prefix (first hop)');
     if (info.norm != null) p.push(`‖h‖=${info.norm.toFixed(2)}`);
     if (info.cos != null) p.push(`cos(prev)=${info.cos.toFixed(3)}`);
   }
