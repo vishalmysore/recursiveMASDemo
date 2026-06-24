@@ -147,6 +147,12 @@ export async function latentForward(rt, text) {
   }
 
   if (forwardErr) return { ok: false, error: forwardErr };
+  // A numerically unstable build (e.g. f16 overflow in the residual stream) returns
+  // NaN/Inf hidden states. Surface that as a clear failure instead of passing a poisoned
+  // latent downstream, where it becomes NaN logits and aborts the wasm runtime.
+  if (vector && !Number.isFinite(norm)) {
+    return { ok: false, error: 'model returned non-finite hidden states (NaN/Inf) — numerically unstable build', stage: 'nan' };
+  }
   if (note)       return { ok: true, shape, dtype, seq, dim, vector: null, norm: null, note };
   return { ok: true, shape, dtype, seq, dim, vector, norm };
 }

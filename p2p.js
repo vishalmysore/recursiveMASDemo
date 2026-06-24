@@ -38,8 +38,8 @@ const MODELS = {
     rec: {
       model:    'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC',
       model_id: 'recursivemas-tinyllama-1.1b',
-      model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f16_1-webgpu.wasm?v=1',
-      vram_required_MB: 1300,
+      model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f32_1-webgpu.wasm?v=1',
+      vram_required_MB: 1500,
       recursiveLink: 'recursivelink-tinyllama.min.json',
     },
   },

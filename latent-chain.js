@@ -186,6 +186,27 @@ function rawForward(rt, fn, allEmb, total) {
   return ret;
 }
 
+// Read a logits NDArray to CPU and check it's finite. A numerically unstable build can
+// emit NaN/Inf logits; feeding those to web-llm's sampler trips `uniform_sample <= nan`
+// → a TVM InternalError that calls exit(1) and tears down the whole wasm runtime (every
+// later call then fails). Sampling a spread of indices is enough — NaN poisons softmax
+// across all positions. Best-effort: if it can't be read, don't block.
+async function logitsFinite(rt, logits) {
+  try {
+    const { tvm, pipeline } = rt;
+    tvm.beginScope();
+    const cpu = tvm.empty(logits.shape, logits.dtype, tvm.cpu());
+    cpu.copyFrom(logits);
+    await pipeline.device.sync();
+    const arr = ndToFloat32(cpu);
+    tvm.endScope();
+    if (!arr || !arr.length) return true;
+    const n = arr.length, step = Math.max(1, (n / 64) | 0);
+    for (let i = 0; i < n; i += step) if (!Number.isFinite(arr[i])) return false;
+    return Number.isFinite(arr[n - 1]);
+  } catch { return true; }
+}
+
 // Tokenize + cap to one prefill chunk.
 function encodeCapped(rt, text) {
   const ids = Array.from(rt.pipeline.tokenizer.encode((text || ' ').slice(0, 6000) || ' '));
@@ -251,6 +272,12 @@ export async function chainForward(rt, text, prefix) {
     const flat = ndToFloat32(cpu);   // full [seq*dim] hidden sequence
     tvm.endScope();
     const { vec, norm } = poolHidden(flat, seq, d);   // pooled only for the proof badge
+    // A numerically unstable build returns NaN/Inf hidden states (e.g. f16 overflow in
+    // the residual stream). Abort here so the poisoned latent never reaches the decode
+    // sampler, where `uniform_sample <= nan` aborts the whole wasm runtime with exit(1).
+    if (!Number.isFinite(norm)) {
+      return { ok: false, error: 'get_last_hidden returned non-finite hidden states (NaN/Inf) — numerically unstable build (rebuild needed)', stage: 'nan' };
+    }
     return { ok: true, shape, dtype, dim: d, seq, rows: seq, data: flat, pooled: vec, norm, injected };
   } catch (e) {
     try { tvm.endScope(); } catch { /* ignore */ }
@@ -310,6 +337,13 @@ export async function chainDecode(rt, text, prefix, opts = {}) {
     const ret = rawForward(rt, realPrefill, all, total);
     logits = tvm.detachFromCurrentScope(ret.get ? ret.get(0) : ret);
     tvm.endScope();
+
+    // Bail before sampling if the seed logits are non-finite (numerically unstable build):
+    // sampling NaN would trip TVM's `uniform_sample <= nan` check and exit(1) the runtime.
+    if (!(await logitsFinite(rt, logits))) {
+      try { logits.dispose && logits.dispose(); } catch { /* ignore */ }
+      return { ok: false, error: 'model produced non-finite logits (NaN/Inf) — numerically unstable build (rebuild needed)', stage: 'nan', injected };
+    }
 
     // Reset the per-generation token-frequency map the sampler penalises against.
     try { pipeline.appearedTokensFreq?.clear?.(); } catch { /* ignore */ }

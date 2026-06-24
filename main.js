@@ -61,8 +61,8 @@ const CUSTOM_MODELS = [
     // link is dimension-matched to the model (896-d for 0.5B vs 2048-d here).
     model:    'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC',
     model_id: 'recursivemas-tinyllama-1.1b',
-    model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f16_1-webgpu.wasm?v=1',
-    vram_required_MB: 1300,
+    model_lib:'https://huggingface.co/VishalMysore/RecursiveMAS-TinyLlama-1.1B-MLC/resolve/main/libs/RecursiveMAS-TinyLlama-1.1B-q4f32_1-webgpu.wasm?v=1',
+    vram_required_MB: 1500,
     label: 'RecursiveMAS TinyLlama 1.1B', size: '~0.6 GB · custom', exposesLatent: true,
     // Trained on TinyLlama, re-encoded to compact base64-f16 (~5.6 MB) and served
     // same-origin. The full 47 MB float JSON also lives at the HF repo root + the
